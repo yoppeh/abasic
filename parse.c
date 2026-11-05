@@ -95,7 +95,13 @@ static symbolType *leftChain(symbolType *(*operand)(void), const keywords *ops, 
         for (i = 0; i < numOps && s->id != ops[i]; i++) {
         }
         if (i == numOps) {
-            return(p);
+            // AND or OR run together with what follows (1ANDX) is a name
+            // starting with the operator; split it off, as the Atari does.
+            for (i = 0; i < numOps && !scanSplitKeyword(ops[i]); i++) {
+            }
+            if (i == numOps) {
+                return(p);
+            }
         }
         if ((a = scanNewSymbol(s->id, NULL)) == NULL) {
             break;
@@ -315,18 +321,10 @@ static symbolType *factor3(void) {
             scanNext();
             return(stringComparison(p));
         case kwCHR:
-        case kwERR:
             if ((p = sexp()) == NULL) {
                 goto err;
             }
             return(stringComparison(p));
-        case kwERL:
-            // The line number of the last error a TRAP caught.
-            if ((p = scanNewSymbol(kwERL, NULL)) == NULL) {
-                goto err;
-            }
-            scanNext();
-            break;
         case kwNumeric:
             if ((p = scanNewSymbol(kwNumeric, s->value)) == NULL) {
                 goto err;
@@ -475,12 +473,6 @@ static symbolType *sexp(void) {
         } else {
             goto err;
         }
-    } else if (s->id == kwERR) {
-        // The message of the last error a TRAP caught.
-        if ((n = scanNewSymbol(kwERR, NULL)) == NULL) {
-            goto err;
-        }
-        scanNext();
     } else if (s->id == kwCHR) {
         if ((n = scanNewSymbol(s->id, NULL)) == NULL) {
             goto err;
@@ -817,7 +809,8 @@ static int insFOR(progLineType *pl) {
         goto err;
     }
     s = scanPeek();
-    if (s->id != kwTO) {
+    // 1TO10 is 1 TO 10: TO can be run together with what follows.
+    if (s->id != kwTO && !scanSplitKeyword(kwTO)) {
         utilError("expecting TO");
         goto err;
     }
@@ -827,7 +820,7 @@ static int insFOR(progLineType *pl) {
         goto err;
     }
     s = scanPeek();
-    if (s->id == kwSTEP) {
+    if (s->id == kwSTEP || scanSplitKeyword(kwSTEP)) {
         scanNext();
         if ((step = aexp()) == NULL) {
             utilError("expecting arithmetic expression");
@@ -906,7 +899,8 @@ static int insIF(progLineType *pl) {
         goto err;
     }
     s = scanPeek();
-    if (s->id != kwTHEN) {
+    // 1THEN100 is 1 THEN 100: THEN can be run together with what follows.
+    if (s->id != kwTHEN && !scanSplitKeyword(kwTHEN)) {
         utilError("expecting keyword 'then'");
         goto err;
     }
@@ -1150,7 +1144,7 @@ static int insON(progLineType *pl) {
         goto err;
     }
     s = scanPeek();
-    if (s->id != kwGOTO && s->id != kwGOSUB) {
+    if (s->id != kwGOTO && s->id != kwGOSUB && !scanSplitKeyword(kwGOSUB) && !scanSplitKeyword(kwGOTO)) {
         utilError("expecting GOTO or GOSUB");
         goto err;
     }
@@ -1558,6 +1552,16 @@ static int statement(progLineType *pl) {
             rc = insTRAP(pl);
             break;
         case kwIdentifier:
+            // A name that starts with a statement keyword is that statement
+            // run together with what follows: PRINTX is PRINT X.
+            if ((rc = scanSplitStatement()) != 0) {
+                if (rc == 1) {
+                    rc = statement(pl);
+                } else {
+                    rc = 1;
+                }
+                break;
+            }
             if (!strcasecmp(s->value, "go")) {
                 // GO TO is another way to write GOTO; insGOTO skips the TO.
                 scanNext();

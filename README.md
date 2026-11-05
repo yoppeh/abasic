@@ -43,10 +43,14 @@ The abbreviated instructions are recognized (PR. for PRINT, G. for GOTO and
 so on, worked out from the Atari's keyword table, so R. is REM and REA. is
 READ), as are ? for PRINT and . for REM.
 
+As on the Atari, keywords can be run together with what follows them:
+`PRINTX`, `GOTO10` and `FORI=1TO10STEP2` all work. That also means a
+variable whose name starts with a statement keyword is misread, just as the
+Atari manual warns: `LETTER=1` sets `TER`, and `REMAINDER=5` is a comment.
+
 TRAP works as on the Atari: after an error is trapped, PEEK(195) gives the
 error number and PEEK(186)+256*PEEK(187) the line number; these are the only
-addresses PEEK supports. As a shortcut, ERL gives the line number and ERR$
-the error message. TRAP 40000 turns trapping off.
+addresses PEEK supports. TRAP 40000 turns trapping off.
 
 Four BASIC programs are included. Three are from the Atari BASIC tutorial and
 one is from some guy's Atari disk image. I loaded it into an Atari emulator
@@ -54,13 +58,17 @@ then saved it to my hard drive. I had to modify it slightly to account for
 the differences in string handling, lack of support for "?" as "PRINT" and
 lack of GRAPHICS modes, but it wasn't too hard. (It now also DIMensions its
 strings, as Atari strings require, and RESTOREs its DATA before each turn,
-without which it ran out of data after a few turns.)
+without which it ran out of data after a few turns. The matrix program now
+READs into a plain variable and copies it into the array, since Atari BASIC's
+READ doesn't take array elements.)
 
 Other differences from Atari BASIC:
 - No hardware, sound, graphics or I/O channel statements (COLOR, SOUND,
   OPEN, PEEK/POKE beyond the TRAP locations above, and so on). RUN and
   LIST don't take a file name.
-- Keywords must be separated from variable names: `PRINT X`, not `PRINTX`.
+- A keyword run together with what follows it is recognized only at the
+  start of a statement, and as TO, STEP, THEN, AND, OR, or GOTO/GOSUB after
+  ON. Elsewhere (NOT, for example) it needs a space after it.
 - Lower case is accepted for keywords and variable names.
 - Numbers are printed with up to 15 significant digits.
 - Numeric variables and array elements start at 0 (the Atari leaves arrays

@@ -274,12 +274,10 @@ static int progJumped = 0;
 /// @brief Set by progHalt() when the current instruction failed.
 static int progError = 0;
 /// @brief The line of the last error a TRAP caught, or of the last STOP (for
-/// PEEK(186)/PEEK(187) and ERL).
+/// PEEK(186)/PEEK(187)).
 static long int progErrorLine = 0;
 /// @brief The Atari error number of the last error a TRAP caught (for PEEK(195)).
 static int progErrorCode = 0;
-/// @brief The message of the last error a TRAP caught (for ERR$).
-static char progErrorMessage[256] = "";
 /// @brief DEG mode: SIN and COS take, and ATN returns, degrees instead of radians.
 static int progDegrees = 0;
 
@@ -1075,10 +1073,9 @@ static void progExecute(void) {
             // TRAP catches one error in a program line, then has to be set again.
             if (progTrap != -1 && line != -1) {
                 long int target = progTrap;
-                // For PEEK(195), PEEK(186)/PEEK(187), ERL and ERR$.
+                // For PEEK(195) and PEEK(186)/PEEK(187).
                 progErrorLine = line;
                 progErrorCode = utilLastErrorCode();
-                snprintf(progErrorMessage, sizeof(progErrorMessage), "%s", utilLastError());
                 progTrap = -1;
                 if ((p = progFindLine(target)) != NULL) {
                     progJump(p, NULL);
@@ -3024,16 +3021,6 @@ static char *eval(symbolType *expr) {
             EVAL_ARG(right, expr->r);
             TAKE_RESULT(right);
             break;
-        case kwERL:
-            SET_NUMBER(r, (double)progErrorLine);
-            break;
-        case kwERR:
-            if ((left = strdup(progErrorMessage)) == NULL) {
-                utilErrorN(ERR_MEMORY, "%s", memErr);
-                goto err;
-            }
-            TAKE_RESULT(left);
-            break;
         case kwABS:
         case kwASC:
         case kwATN:
@@ -3288,10 +3275,6 @@ static char *evalCode(symbolType *exp) {
                 if ((r = evalCode(exp->r)) != NULL) {
                     s = strfmt("not %s", r);
                 }
-                break;
-            case kwERL:
-            case kwERR:
-                s = strdup(scanGetKeyword(exp->id));
                 break;
             default:
                 s = strdup("");

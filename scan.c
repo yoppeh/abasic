@@ -19,6 +19,8 @@
 
 // "Variable names may be up to 120 characters long" (Manual, section 1).
 #define MAX_NAME_LEN 120
+// Room for text put back by splitName(): what's left of a few names.
+#define MAX_PENDING 1024
 
 /// @brief The keywords as a balanced binary tree over keywordTable, for lookup().
 static symbolType *keywordTree = NULL;
@@ -76,8 +78,6 @@ static symbolType keywordTable[] = {
     {NULL, NULL, "val", kwVAL},
     {NULL, NULL, "chr$", kwCHR},
     {NULL, NULL, "str$", kwSTR},
-    {NULL, NULL, "erl", kwERL},
-    {NULL, NULL, "err$", kwERR},
     {NULL, NULL, "peek", kwPEEK}
 };
 /// @brief The current token; its value buffer holds maxStringLen + 1 characters.
@@ -86,6 +86,17 @@ static symbolType *scanCurrent = NULL;
 static symbolType *idToKeywordTable[kwNumKeywords];
 /// @brief Where the current token starts in its input line, for error messages.
 static long tokenColumn = -1;
+
+/// @brief Text to scan before the rest of the input.
+/// @details When a keyword is found at the start of a longer name (PRINTX is
+/// PRINT, then X), the rest of the name is put back here. pendingPos is the
+/// next character to scan and pendingLen how many there are.
+static char pending[MAX_PENDING];
+static size_t pendingLen = 0;
+static size_t pendingPos = 0;
+/// @brief Whether the last name scanned was followed by a space, so splitName()
+/// can put the space back after the rest of the name.
+static int nameSpaced = 0;
 
 /// @brief Atari BASIC's statement table, in its order.
 /// @details An abbreviation (PR. for PRINT) means the first statement here
@@ -114,6 +125,9 @@ static const struct {
 };
 
 static int cmpKeywords(const void *a, const void *b);
+static char nextChar(void);
+static char peekChar(void);
+static void splitName(keywords k, size_t n);
 static char *scanGetLOp(void);
 static char *scanGetName(void);
 static char *scanGetNum(void);
@@ -209,10 +223,90 @@ long scanTokenColumn(void) {
 }
 
 
+/// @brief Moves to the next character: the next pending one, or the next of
+/// the input. Returns the new current character.
+static char nextChar(void) {
+    if (pendingPos < pendingLen) {
+        pendingPos++;
+        return(peekChar());
+    }
+    return(ioNext());
+}
+
+
+/// @brief Returns the current character: pending text first, then the input.
+static char peekChar(void) {
+    return(pendingPos < pendingLen ? pending[pendingPos] : ioPeek());
+}
+
+
+/// @brief Makes the current token, an identifier, the keyword k whose name is
+/// its first n characters, and puts the rest of the name back to be scanned.
+static void splitName(keywords k, size_t n) {
+    char buf[MAX_PENDING];
+    const char *rest = scanCurrent->value + n;
+    size_t restLen = strlen(rest);
+    size_t oldLen = pendingLen - pendingPos;
+    size_t space = nameSpaced ? 1 : 0;
+    // Names are at most maxStringLen characters, so this always fits; refuse
+    // rather than overflow if it ever didn't.
+    if (restLen + space + oldLen > sizeof(buf)) {
+        return;
+    }
+    memcpy(buf, rest, restLen);
+    if (space) {
+        buf[restLen] = ' ';
+    }
+    memcpy(buf + restLen + space, pending + pendingPos, oldLen);
+    pendingLen = restLen + space + oldLen;
+    pendingPos = 0;
+    memcpy(pending, buf, pendingLen);
+    scanCurrent->id = k;
+    scanCurrent->value[0] = 0;
+}
+
+
+int scanSplitKeyword(keywords k) {
+    const char *name = scanGetKeyword(k);
+    size_t n;
+    if (name == NULL || scanCurrent->id != kwIdentifier) {
+        return(0);
+    }
+    n = strlen(name);
+    if (strlen(scanCurrent->value) <= n || strncasecmp(scanCurrent->value, name, n)) {
+        return(0);
+    }
+    splitName(k, n);
+    return(1);
+}
+
+
+int scanSplitStatement(void) {
+    size_t i;
+    size_t n;
+    if (scanCurrent->id != kwIdentifier) {
+        return(0);
+    }
+    for (i = 0; i < sizeof(statementTable) / sizeof(statementTable[0]); i++) {
+        n = strlen(statementTable[i].name);
+        if (strlen(scanCurrent->value) > n && !strncasecmp(scanCurrent->value, statementTable[i].name, n)) {
+            if (statementTable[i].id == -1) {
+                utilError("%s starts with %s, which this BASIC doesn't have", scanCurrent->value, statementTable[i].name);
+                return(-1);
+            }
+            splitName(statementTable[i].id, n);
+            return(1);
+        }
+    }
+    return(0);
+}
+
+
 int scanConsumeEol(void) {
     // A new line starts here, so it may report its own error.
     utilErrorReset();
-    ioNext();
+    pendingLen = pendingPos = 0;
+    nextChar();
     return(scanNext());
 }
 
@@ -306,23 +400,23 @@ static char *scanGetLOp(void) {
     if (s == NULL) {
         aborts("memory allocation error");
     }
-    switch (ioPeek()) {
+    switch (peekChar()) {
         case '<':
             *t++ = '<';
-            ioNext();
-            if (ioPeek() == '=' || ioPeek() == '>') {
-                *t++ = ioPeek();
-                ioNext();
+            nextChar();
+            if (peekChar() == '=' || peekChar() == '>') {
+                *t++ = peekChar();
+                nextChar();
             }
             *t = 0;
             skipWhite();
             return(s);
         case '>':
             *t++ = '>';
-            ioNext();
-            if (ioPeek() == '=') {
-                *t++ = ioPeek();
-                ioNext();
+            nextChar();
+            if (peekChar() == '=') {
+                *t++ = peekChar();
+                nextChar();
             }
             *t = 0;
             skipWhite();
@@ -330,7 +424,7 @@ static char *scanGetLOp(void) {
         case '=':
             *t++ = '=';
             *t = 0;
-            ioNext();
+            nextChar();
             skipWhite();
             return(s);
     }
@@ -350,15 +444,15 @@ static char *scanGetName(void) {
     if (s == NULL) {
         aborts("memory allocation error");
     }
-    if (!isalpha((unsigned char)ioPeek())) {
+    if (!isalpha((unsigned char)peekChar())) {
         utilError("expected alphabetic character");
         free(s);
         return(NULL);
     }
     // The buffer holds maxStringLen + 1 bytes, so i reaching -1 means too long.
-    while (i >= 0 && (isalnum((unsigned char)ioPeek()) || ioPeek() == '$')) {
-        *t++ = ioPeek();
-        ioNext();
+    while (i >= 0 && (isalnum((unsigned char)peekChar()) || peekChar() == '$')) {
+        *t++ = peekChar();
+        nextChar();
         i--;
     }
     if (i < 0) {
@@ -367,6 +461,7 @@ static char *scanGetName(void) {
         return(NULL);
     }
     *t = 0;
+    nameSpaced = isspace((unsigned char)peekChar()) && peekChar() != '\n';
     skipWhite();
     return(s);
 }
@@ -381,31 +476,31 @@ static char *scanGetNum(void) {
     if (s == NULL) {
         aborts("memory allocation error");
     }
-    if (!isdigit((unsigned char)ioPeek()) && ioPeek() != '.') {
+    if (!isdigit((unsigned char)peekChar()) && peekChar() != '.') {
         utilError("expected digit");
         free(s);
         return(NULL);
     }
     int digits = 0;
-    while (i >= 0 && (isdigit((unsigned char)ioPeek()) || ioPeek() == '.')) {
-        digits += isdigit((unsigned char)ioPeek()) != 0;
-        *t++ = ioPeek();
-        ioNext();
+    while (i >= 0 && (isdigit((unsigned char)peekChar()) || peekChar() == '.')) {
+        digits += isdigit((unsigned char)peekChar()) != 0;
+        *t++ = peekChar();
+        nextChar();
         i--;
     }
     // An optional exponent (E, an optional sign, digits), only after a digit, so ". END" stays a REM.
-    if (digits > 0 && i >= 0 && (ioPeek() == 'e' || ioPeek() == 'E')) {
-        *t++ = ioPeek();
-        ioNext();
+    if (digits > 0 && i >= 0 && (peekChar() == 'e' || peekChar() == 'E')) {
+        *t++ = peekChar();
+        nextChar();
         i--;
-        if (i >= 0 && (ioPeek() == '+' || ioPeek() == '-')) {
-            *t++ = ioPeek();
-            ioNext();
+        if (i >= 0 && (peekChar() == '+' || peekChar() == '-')) {
+            *t++ = peekChar();
+            nextChar();
             i--;
         }
-        while (i >= 0 && isdigit((unsigned char)ioPeek())) {
-            *t++ = ioPeek();
-            ioNext();
+        while (i >= 0 && isdigit((unsigned char)peekChar())) {
+            *t++ = peekChar();
+            nextChar();
             i--;
         }
     }
@@ -428,14 +523,14 @@ static char *scanGetOp(void) {
     if (s == NULL) {
         aborts("memory allocation error");
     }
-    if (!isop(ioPeek())) {
+    if (!isop(peekChar())) {
         utilError("expected operator");
         free(s);
         return(NULL);
     }
     // One character only, so 2*-3 is '*' then '-'.
-    *t++ = ioPeek();
-    ioNext();
+    *t++ = peekChar();
+    nextChar();
     *t = 0;
     skipWhite();
     return(s);
@@ -452,15 +547,15 @@ static char *scanGetString(void) {
         utilError("memory allocation error");
         return(NULL);
     }
-    if (ioPeek() != '"') {
+    if (peekChar() != '"') {
         utilError("expected quote");
         free(s);
         return(NULL);
     }
-    ioNext();
-    while (i >= 0 && ioPeek() != '"' && ioPeek() != '\n' && ioPeek() != IO_EOF) {
-        *t++ = ioPeek();
-        ioNext();
+    nextChar();
+    while (i >= 0 && peekChar() != '"' && peekChar() != '\n' && peekChar() != IO_EOF) {
+        *t++ = peekChar();
+        nextChar();
         i--;
     }
     if (i < 0) {
@@ -469,12 +564,12 @@ static char *scanGetString(void) {
         return(NULL);
     }
     // "The closing quotation can be omitted if it is the last character on a logical line."
-    if (ioPeek() == '\n' || ioPeek() == IO_EOF) {
+    if (peekChar() == '\n' || peekChar() == IO_EOF) {
         *t = 0;
         return(s);
     }
     *t = 0;
-    ioNext();
+    nextChar();
     skipWhite();
     return(s);
 }
@@ -483,9 +578,9 @@ static char *scanGetString(void) {
 symbolType *scanGetText(void) {
     char *t = scanCurrent->value;
     int i = maxStringLen;
-    while (i >= 0 && ioPeek() != '\n' && ioPeek() != IO_EOF) {
-        *t++ = ioPeek();
-        ioNext();
+    while (i >= 0 && peekChar() != '\n' && peekChar() != IO_EOF) {
+        *t++ = peekChar();
+        nextChar();
         i--;
     }
     if (i < 0) {
@@ -565,10 +660,11 @@ int scanNext(void) {
 
 
 void scanSkipLine(void) {
-    while (ioPeek() != '\n' && ioPeek() != IO_EOF) {
-        ioNext();
+    pendingLen = pendingPos = 0;
+    while (peekChar() != '\n' && peekChar() != IO_EOF) {
+        nextChar();
     }
-    scanCurrent->id = (ioPeek() == IO_EOF) ? kwEof : kwEol;
+    scanCurrent->id = (peekChar() == IO_EOF) ? kwEof : kwEol;
     scanCurrent->value[0] = 0;
 }
 
@@ -581,56 +677,56 @@ static int scanToken(void) {
     skipWhite();
     tokenColumn = ioColumn();
     scanCurrent->value[0] = 0;
-    if (ioPeek() == IO_EOF) {
+    if (peekChar() == IO_EOF) {
         scanCurrent->id = kwEof;
         scanCurrent->value[0] = 0;
         return(0);
-    } else if (ioPeek() == '\n') {
+    } else if (peekChar() == '\n') {
         scanCurrent->id = kwEol;
         scanCurrent->value[0] = 0;
         skipWhite();
         return(0);
-    } else if (ioPeek() == '(') {
+    } else if (peekChar() == '(') {
         scanCurrent->id = kwParenthesesOpen;
         scanCurrent->value[0] = 0;
-        ioNext();
+        nextChar();
         skipWhite();
         return(0);
-    } else if (ioPeek() == ')') {
+    } else if (peekChar() == ')') {
         scanCurrent->id = kwParenthesesClose;
         scanCurrent->value[0] = 0;
-        ioNext();
+        nextChar();
         skipWhite();
         return(0);
-    } else if (ioPeek() == ',') {
+    } else if (peekChar() == ',') {
         scanCurrent->id = kwComma;
         scanCurrent->value[0] = 0;
-        ioNext();
+        nextChar();
         skipWhite();
         return(0);
-    } else if (ioPeek() == ';') {
+    } else if (peekChar() == ';') {
         scanCurrent->id = kwSemicolon;
         scanCurrent->value[0] = 0;
-        ioNext();
+        nextChar();
         skipWhite();
         return(0);
-    } else if (ioPeek() == ':') {
+    } else if (peekChar() == ':') {
         scanCurrent->id = kwColon;
         scanCurrent->value[0] = 0;
-        ioNext();
+        nextChar();
         skipWhite();
         return(0);
-    } else if (ioPeek() == '?') {
+    } else if (peekChar() == '?') {
         // ? is short for PRINT.
         scanCurrent->id = kwPRINT;
-        ioNext();
+        nextChar();
         skipWhite();
         return(0);
-    } else if (isalpha((unsigned char)ioPeek())) {
+    } else if (isalpha((unsigned char)peekChar())) {
         if ((s = scanGetName()) != NULL) {
-            if (ioPeek() == '.') {
+            if (peekChar() == '.') {
                 // An abbreviated statement, e.g. PR. for PRINT.
-                ioNext();
+                nextChar();
                 skipWhite();
                 i = lookupAbbreviation(s);
                 if (i == -1) {
@@ -658,7 +754,7 @@ static int scanToken(void) {
             return(0);
         }
         return(1);
-    } else if (isdigit((unsigned char)ioPeek()) || ioPeek() == '.') {
+    } else if (isdigit((unsigned char)peekChar()) || peekChar() == '.') {
         if ((s = scanGetNum()) != NULL) {
             if (!strcmp(s, ".")) {
                 // A lone period isn't a number; at the start of a statement it means REM.
@@ -672,7 +768,7 @@ static int scanToken(void) {
             return(0);
         }
         return(1);
-    } else if (isop(ioPeek())) {
+    } else if (isop(peekChar())) {
         if ((s = scanGetOp()) != NULL) {
             scanCurrent->value[0] = 0;
             if (!strcmp(s, "+")) {
@@ -690,7 +786,7 @@ static int scanToken(void) {
             return(0);
         }
         return(1);
-    } else if (islop(ioPeek())) {
+    } else if (islop(peekChar())) {
         if ((s = scanGetLOp()) != NULL) {
             scanCurrent->value[0] = 0;
             if (!strcmp(s, "<")) {
@@ -709,7 +805,7 @@ static int scanToken(void) {
             free(s);
             return(0);
         }
-    } else if (ioPeek() == '"') {
+    } else if (peekChar() == '"') {
         if ((s = scanGetString()) != NULL) {
             scanCurrent->id = kwString;
             strcpy(scanCurrent->value, s);
@@ -719,7 +815,7 @@ static int scanToken(void) {
         return(1);
     }
     // Not the start of any token: leave it for the error message.
-    scanCurrent->value[0] = ioPeek();
+    scanCurrent->value[0] = peekChar();
     scanCurrent->value[1] = 0;
     return(1);
 }
@@ -732,7 +828,7 @@ symbolType *scanPeek(void) {
 
 /// @brief Skips spaces and tabs, but not the end of the line.
 static void skipWhite(void) {
-    while (isspace((unsigned char)ioPeek()) && ioPeek() != '\n') {
-        ioNext();
+    while (isspace((unsigned char)peekChar()) && peekChar() != '\n') {
+        nextChar();
     }
 }

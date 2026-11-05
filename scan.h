@@ -70,8 +70,6 @@ typedef enum {
     kwVAL,
     kwCHR,
     kwSTR,
-    kwERL,
-    kwERR,
     kwPEEK,
     kwOR,
     kwAND,
@@ -183,6 +181,29 @@ extern symbolType *scanPeek(void);
  * @details The current token becomes kwEol (or kwEof).
  */
 extern void scanSkipLine(void);
+
+/**
+ * @brief Splits a keyword off the front of the current token, if it's a name
+ * that starts with it.
+ * @details Atari BASIC recognizes a keyword wherever the grammar expects one,
+ * even run together with what follows, so where a TO is expected, the name
+ * TO10 is TO followed by 10. The rest of the name is scanned next.
+ * @param k The keyword the parser expects.
+ * @return 1 if the current token is now k, 0 if it wasn't split.
+ */
+extern int scanSplitKeyword(keywords k);
+
+/**
+ * @brief Splits a statement keyword off the front of the current token, if
+ * it's a name that starts with one.
+ * @details At the start of a statement, Atari BASIC takes the first statement
+ * in its table whose name starts the text, so PRINTX is PRINT X and LETTER=1
+ * is LET TER=1. A name starting with an Atari statement this BASIC doesn't
+ * have (COLORS=1 is COLOR S=1) is reported as an error.
+ * @return 1 if the current token is now that statement, 0 if it wasn't split,
+ * or -1 after reporting an error.
+ */
+extern int scanSplitStatement(void);
 
 /**
  * @brief Returns where the current token starts in its input line.
