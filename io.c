@@ -1,5 +1,10 @@
-/*
- * io.c
+/**
+ * @file io.c
+ * @author Warren Mann (warren@nonvol.io)
+ * @brief Input for the interpreter: the terminal and LOADed files.
+ * @version 0.0.1
+ * @date 2017-03-15
+ * @copyright Copyright (c) 2026
  */
 
 #include <fcntl.h>
@@ -13,20 +18,16 @@
 #include "io.h"
 #include "util.h"
 
-
-/*
- * LOCAL CONSTANTS
- */
-
+// How much is read from a file at a time.
 #define MAX_BUFFER_LEN 1024
-/* how much of the current line is kept for error messages */
+// How much of the current line is kept for error messages.
 #define MAX_LINE_LEN 1024
 
-
-/*
- * LOCAL DATA TYPES
- */
-
+/// @brief An open input.
+/// @details buffer holds what was last read from fh; ptr is the next
+/// character in it and len how many are left. peek is the current character.
+/// line holds the current line so far, up to and including peek (for error
+/// messages), and lineLen its length, which can exceed MAX_LINE_LEN.
 typedef struct ioType {
     struct ioType *next;
     char *buffer;
@@ -34,22 +35,12 @@ typedef struct ioType {
     unsigned long int len;
     int fh;
     char peek;
-    /* the current line so far, up to and including peek (for error messages) */
     char line[MAX_LINE_LEN];
     size_t lineLen;
 } ioType;
 
-
-/*
- * LOCAL DATA
- */
-
+/// @brief The stack of open inputs; the top is the current one.
 static ioType *fileStack = NULL;
-
-
-/*
- * LOCAL FUNCTIONS
- */
 
 static void ioExit(void);
 
@@ -70,6 +61,7 @@ int ioCloseInput(void) {
 }
 
 
+/// @brief Closes every input, at exit.
 static void ioExit(void) {
     ioType *iop = fileStack;
     ioType *ion;
@@ -100,7 +92,7 @@ char ioNext(void) {
         return(IO_EOF);
     }
     if (fileStack->len == 0) {
-        /* read() returns -1 on error; len is unsigned, so test before storing */
+        // read() returns -1 on error; len is unsigned, so test before storing.
         n = read(fileStack->fh, fileStack->buffer, MAX_BUFFER_LEN);
         if (n < 0) {
             return(IO_EOF);
@@ -117,7 +109,7 @@ char ioNext(void) {
             fileStack->ptr = fileStack->buffer;
         }
     }
-    /* a new line starts after a newline */
+    // A new line starts after a newline.
     if (fileStack->peek == '\n') {
         fileStack->lineLen = 0;
     }
@@ -152,12 +144,10 @@ int ioOpenInput(char *fn) {
     iop->ptr = buffer;
     iop->len = 0;
     iop->fh = fh;
-    /*
-     * Nothing has been read yet. Act as if the stream were at the end of a
-     * line: if another file is opened on top of this one before it is read
-     * (abasic file.bas), returning to it then looks like a fresh line rather
-     * than end of input.
-     */
+    // Nothing has been read yet. Act as if the stream were at the end of a
+    // line: if another file is opened on top of this one before it is read
+    // (abasic file.bas), returning to it then looks like a fresh line rather
+    // than end of input.
     iop->peek = '\n';
     iop->lineLen = 0;
     fileStack = iop;
@@ -210,10 +200,8 @@ char *ioReadLine(void) {
     ssize_t n;
     size_t cap = 128;
     size_t len = 0;
-    /*
-     * INPUT always reads the terminal, even while a LOADed file is being
-     * read, so find standard input in the stack.
-     */
+    // INPUT always reads the terminal, even while a LOADed file is being
+    // read, so find standard input in the stack.
     while (iop != NULL && iop->fh != 0) {
         iop = iop->next;
     }
@@ -233,7 +221,7 @@ char *ioReadLine(void) {
             iop->len = (unsigned long int)n;
             iop->ptr = iop->buffer;
         }
-        /* take characters after the scanner's current one (iop->peek) */
+        // Take characters after the scanner's current one (iop->peek).
         c = *iop->ptr++;
         iop->len--;
         if (c == '\n') {

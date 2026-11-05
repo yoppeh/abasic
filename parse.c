@@ -1,5 +1,15 @@
-/*
- * parse.c
+/**
+ * @file parse.c
+ * @author Warren Mann (warren@nonvol.io)
+ * @brief The parser: turns lines of BASIC into program lines and runs immediate ones.
+ * @details A recursive-descent parser over the scanner's tokens. Expressions
+ * follow the BNF's levels: aexp (OR), term1 (AND, NOT), term2 (comparisons),
+ * term3 (+ -), term4 (* /), factor1 (^), factor2 (sign), factor3 (operands);
+ * sexp is a string expression. Each insXXX() parses one statement, whose
+ * keyword is the current token, and adds it to a line.
+ * @version 0.0.1
+ * @date 2017-03-15
+ * @copyright Copyright (c) 2026
  */
 
 #include <ctype.h>
@@ -13,11 +23,6 @@
 #include "scan.h"
 #include "util.h"
 #include "var.h"
-
-
-/*
- * LOCAL FUNCTIONS
- */
 
 static symbolType *term1(void);
 static symbolType *notTerm(void);
@@ -34,6 +39,7 @@ static symbolType *stringComparison(symbolType *left);
 
 static symbolType *parseAssignment(void);
 static int insAssignment(progLineType *p);
+static int insBYE(progLineType *pl);
 static int insCLR(progLineType *pl);
 static int insCLS(progLineType *pl);
 static int insCONT(progLineType *pl);
@@ -48,6 +54,7 @@ static int insINPUT(progLineType *pl);
 static int insLET(progLineType *pl);
 static int insLIST(progLineType *pl);
 static int insLOAD(progLineType *pl);
+static int insNEW(progLineType *pl);
 static int insNEXT(progLineType *pl);
 static int insON(progLineType *pl);
 static int insPOP(progLineType *pl);
@@ -71,11 +78,10 @@ static int endOfStatement(symbolType *s);
 static void immediateStatement(void);
 
 
-/*
- * <operand> [<op> <operand>]...: a left-associative chain of binary operator
- * nodes, which is what the BNF's left-recursive rules (<aexp> ::= <aexp> OR
- * <term1>, ...) describe. ops lists the operators accepted at this level.
- */
+/// @brief Parses <operand> [<op> <operand>]...: a left-associative chain of
+/// binary operator nodes.
+/// @details That is what the BNF's left-recursive rules (<aexp> ::= <aexp> OR
+/// <term1>, ...) describe. ops lists the operators accepted at this level.
 static symbolType *leftChain(symbolType *(*operand)(void), const keywords *ops, size_t numOps) {
     symbolType *a;
     symbolType *p;
@@ -106,17 +112,16 @@ static symbolType *leftChain(symbolType *(*operand)(void), const keywords *ops, 
 }
 
 
-/* <aexp> ::= <term1> | <aexp> OR <term1> */
+/// @brief Parses <aexp> ::= <term1> | <aexp> OR <term1>.
 static symbolType *aexp(void) {
     static const keywords ops[] = { kwOR };
     return(leftChain(term1, ops, 1));
 }
 
 
-/*
- * NOT <term2>. The BNF has NOT only at the start of a <term1>; it is also
- * accepted after AND (A AND NOT B) and repeated (NOT NOT A).
- */
+/// @brief Parses NOT <term2>, or a <term2>.
+/// @details The BNF has NOT only at the start of a <term1>; it is also
+/// accepted after AND (A AND NOT B) and repeated (NOT NOT A).
 static symbolType *notTerm(void) {
     symbolType *p;
     if (scanPeek()->id != kwNOT) {
@@ -134,24 +139,23 @@ static symbolType *notTerm(void) {
 }
 
 
-/* <term1> ::= <term2> | <term1> AND <term2> | NOT <term2> */
+/// @brief Parses <term1> ::= <term2> | <term1> AND <term2> | NOT <term2>.
 static symbolType *term1(void) {
     static const keywords ops[] = { kwAND };
     return(leftChain(notTerm, ops, 1));
 }
 
 
-/* <term2> ::= <term3> | <term2> <lop> <term3> */
+/// @brief Parses <term2> ::= <term3> | <term2> <lop> <term3>.
 static symbolType *term2(void) {
     static const keywords ops[] = { kwLogicalLT, kwLogicalLTE, kwLogicalEQ, kwLogicalNE, kwLogicalGT, kwLogicalGTE };
     return(leftChain(term3, ops, sizeof(ops) / sizeof(ops[0])));
 }
 
 
-/*
- * term3 and term4 loop rather than recurse on the right, so the operators are
- * left-associative: 10-3-2 is (10-3)-2 and 8/4/2 is (8/4)/2.
- */
+/// @brief Parses <term3> ::= <term4> | <term3> <addop> <term4>.
+/// @details term3 and term4 loop rather than recurse on the right, so the
+/// operators are left-associative: 10-3-2 is (10-3)-2 and 8/4/2 is (8/4)/2.
 static symbolType *term3(void) {
     symbolType *a = NULL;
     symbolType *p = NULL;
@@ -181,6 +185,7 @@ err:
 }
 
 
+/// @brief Parses <term4> ::= <factor1> | <term4> <mulop> <factor1>.
 static symbolType *term4(void) {
     symbolType *a = NULL;
     symbolType *p = NULL;
@@ -210,20 +215,22 @@ err:
 }
 
 
-/* <factor1> ::= <factor2> | <factor1> ^ <factor2>, so 2^3^2 is (2^3)^2 = 64 */
+/// @brief Parses <factor1> ::= <factor2> | <factor1> ^ <factor2>, so 2^3^2 is
+/// (2^3)^2 = 64.
 static symbolType *factor1(void) {
     static const keywords ops[] = { kwOpExp };
     return(leftChain(factor2, ops, 1));
 }
 
 
+/// @brief Parses <factor2> ::= <factor3> | <sign> <factor3>.
 static symbolType *factor2(void) {
     symbolType *a = NULL;
     symbolType *p = NULL;
     symbolType *s;
     s = scanPeek();
     if (s->id == kwOpAdd || s->id == kwOpSub) {
-        /* s is the scanner's shared token, so read it before scanNext() */
+        // s is the scanner's shared token, so read it before scanNext().
         keywords sign = (s->id == kwOpAdd) ? kwSignPlus : kwSignMinus;
         scanNext();
         if ((a = scanNewSymbol(sign, NULL)) == NULL) {
@@ -247,6 +254,8 @@ err:
 }
 
 
+/// @brief Parses <factor3>: a parenthesized <aexp>, a constant, a variable,
+/// a function, or a comparison of strings.
 static symbolType *factor3(void) {
     symbolType *p = NULL;
     symbolType *s = scanPeek();
@@ -295,7 +304,7 @@ static symbolType *factor3(void) {
                 scanNext();
             }
             if (strchr(p->value, '$') != NULL) {
-                /* the whole variable, subscripts included, is the left operand */
+                // The whole variable, subscripts included, is the left operand.
                 return(stringComparison(p));
             }
             break;
@@ -312,7 +321,7 @@ static symbolType *factor3(void) {
             }
             return(stringComparison(p));
         case kwERL:
-            /* line number of the last error a TRAP caught */
+            // The line number of the last error a TRAP caught.
             if ((p = scanNewSymbol(kwERL, NULL)) == NULL) {
                 goto err;
             }
@@ -361,7 +370,7 @@ static symbolType *factor3(void) {
         case kwASC:
         case kwLEN:
         case kwVAL:
-            /* functions of a string that return a number */
+            // Functions of a string that return a number.
             if ((p = scanNewSymbol(s->id, NULL)) == NULL) {
                 goto err;
             }
@@ -395,11 +404,10 @@ err:
 }
 
 
-/*
- * A string operand can only be used in a comparison with another string:
- * left <op> sexp. The comparison node's value is set to "$" so eval compares
- * the operands as strings rather than as numbers. Takes ownership of left.
- */
+/// @brief Parses the rest of a comparison of strings, left <op> <sexp>.
+/// @details A string operand can only be used in a comparison with another
+/// string. The comparison node's value is set to "$" so eval compares the
+/// operands as strings rather than as numbers. Takes ownership of left.
 static symbolType *stringComparison(symbolType *left) {
     symbolType *p = NULL;
     symbolType *s = scanPeek();
@@ -425,6 +433,8 @@ err:
 }
 
 
+/// @brief Parses <sexp>: a string literal, a string variable or substring, or
+/// a string function. Returns NULL without an error if there is none.
 static symbolType *sexp(void) {
     symbolType *s;
     symbolType *n = NULL;
@@ -466,7 +476,7 @@ static symbolType *sexp(void) {
             goto err;
         }
     } else if (s->id == kwERR) {
-        /* message of the last error a TRAP caught */
+        // The message of the last error a TRAP caught.
         if ((n = scanNewSymbol(kwERR, NULL)) == NULL) {
             goto err;
         }
@@ -517,12 +527,14 @@ static symbolType *sexp(void) {
     }
     return(n);
 err:
-    /* n may already have subscript or argument expressions attached */
+    // n may already have subscript or argument expressions attached.
     progDeleteExpression(n);
     return(NULL);
 }
 
 
+/// @brief Parses <var> = <exp>, with an <sexp> for a string variable and an
+/// <aexp> otherwise, and returns it as a kwAssignment node.
 static symbolType *parseAssignment(void) {
     symbolType *s;
     symbolType *i = NULL;
@@ -595,6 +607,7 @@ err:
 }
 
 
+/// @brief Parses an assignment without LET.
 static int insAssignment(progLineType *pl) {
     symbolType *a = NULL;
     if ((a = parseAssignment()) == NULL) {
@@ -609,41 +622,48 @@ err:
 }
 
 
+/// @brief Parses BYE.
 static int insBYE(progLineType *pl) {
     scanNext();
     return(progAppendInstruction(pl, kwBYE, NULL));
 }
 
+/// @brief Parses CLR.
 static int insCLR(progLineType *pl) {
     scanNext();
     return(progAppendInstruction(pl, kwCLR, NULL));
 }
 
 
+/// @brief Parses CLS.
 static int insCLS(progLineType *pl) {
     scanNext();
     return(progAppendInstruction(pl, kwCLS, NULL));
 }
 
 
+/// @brief Parses CONT.
 static int insCONT(progLineType *pl) {
     scanNext();
     return(progAppendInstruction(pl, kwCONT, NULL));
 }
 
 
+/// @brief Parses DEG.
 static int insDEG(progLineType *pl) {
     scanNext();
     return(progAppendInstruction(pl, kwDEG, NULL));
 }
 
 
+/// @brief Parses RAD.
 static int insRAD(progLineType *pl) {
     scanNext();
     return(progAppendInstruction(pl, kwRAD, NULL));
 }
 
 
+/// @brief Parses DATA <data string> [,<data string>]...: the rest of the line.
 static int insDATA(progLineType *pl) {
     symbolType *s = NULL;
     char **t = NULL;
@@ -659,7 +679,7 @@ static int insDATA(progLineType *pl) {
         utilError("couldn't allocate memory");
         goto err;
     }
-    /* trim spaces around each item: DATA 1, 2 stores "1" and "2" */
+    // Trim spaces around each item: DATA 1, 2 stores "1" and "2".
     for (i = 0; t[i] != NULL; i++) {
         char *end;
         while (isspace((unsigned char)*t[i])) {
@@ -683,6 +703,7 @@ err:
 }
 
 
+/// @brief Parses DIM <var>(<aexp>[,<aexp>]) [,<var>(<aexp>[,<aexp>])]...
 static int insDIM(progLineType *pl) {
     symbolType **aa = NULL;
     symbolType **a = NULL;
@@ -777,12 +798,14 @@ err:
 }
 
 
+/// @brief Parses END.
 static int insEND(progLineType *pl) {
     scanNext();
     return(progAppendInstruction(pl, kwEND, NULL));
 }
 
 
+/// @brief Parses FOR <avar> = <aexp> TO <aexp> [STEP <aexp>].
 static int insFOR(progLineType *pl) {
     symbolType *step = NULL;
     symbolType *to = NULL;
@@ -829,6 +852,7 @@ err:
 }
 
 
+/// @brief Parses GOSUB <aexp>.
 static int insGOSUB(progLineType *pl) {
     scanNext();
     symbolType *s = aexp();
@@ -848,6 +872,7 @@ err:
 }
 
 
+/// @brief Parses GOTO <aexp> (or GO TO, whose TO is the current token).
 static int insGOTO(progLineType *pl) {
     scanNext();
     symbolType *s = aexp();
@@ -867,6 +892,7 @@ err:
 }
 
 
+/// @brief Parses IF <aexp> THEN {<lineno> | <compound statement>}.
 static int insIF(progLineType *pl) {
     symbolType *e = NULL;
     void *i = NULL;
@@ -892,7 +918,7 @@ static int insIF(progLineType *pl) {
         }
         iIsExp = 1;
     } else {
-        /* take ownership first: a failed compoundStatement can leave some instructions */
+        // Take ownership first: a failed compoundStatement can leave some instructions.
         iIsExp = 0;
         if (compoundStatement(&ip)) {
             i = ip.firstInstruction;
@@ -920,6 +946,7 @@ err:
 }
 
 
+/// @brief Parses INPUT <var> [,<var>]...
 static int insINPUT(progLineType *pl) {
     symbolType **aa = NULL;
     symbolType **a = NULL;
@@ -945,13 +972,11 @@ static int insINPUT(progLineType *pl) {
         scanNext();
         s = scanPeek();
         if (s->id == kwParenthesesOpen) {
-            /*
-             * <avar> | <string id> only (BNF). "String variables are allowed
-             * only if they are not subscripted. Matrix variables are not
-             * allowed", where a matrix variable is "also called a Subscripted
-             * Variable. An element of an array or matrix." (Manual, INPUT and
-             * Table 1.1)
-             */
+            // <avar> | <string id> only (BNF). "String variables are allowed
+            // only if they are not subscripted. Matrix variables are not
+            // allowed", where a matrix variable is "also called a Subscripted
+            // Variable. An element of an array or matrix." (Manual, INPUT and
+            // Table 1.1)
             utilError("INPUT takes only unsubscripted variables");
             goto err;
         }
@@ -1004,6 +1029,7 @@ err:
 }
 
 
+/// @brief Parses LET <var> = <exp>.
 static int insLET(progLineType *pl) {
     symbolType *a = NULL;
     scanNext();
@@ -1022,6 +1048,7 @@ err:
 }
 
 
+/// @brief Parses LIST [<aexp> [,<aexp>]].
 static int insLIST(progLineType *pl) {
     symbolType *l1 = NULL;
     symbolType *l2 = NULL;
@@ -1055,6 +1082,7 @@ err:
 }
 
 
+/// @brief Parses LOAD <sexp>.
 static int insLOAD(progLineType *pl) {
     symbolType *s = NULL;
     scanNext();
@@ -1074,12 +1102,14 @@ err:
 }
 
 
+/// @brief Parses NEW.
 static int insNEW(progLineType *pl) {
     scanNext();
     return(progAppendInstruction(pl, kwNEW, NULL));
 }
 
 
+/// @brief Parses NEXT <avar>.
 static int insNEXT(progLineType *pl) {
     symbolType *s = NULL;
     symbolType *v = NULL;
@@ -1105,6 +1135,7 @@ err:
 }
 
 
+/// @brief Parses ON <aexp> {GOTO | GOSUB} <aexp> [,<aexp>]...
 static int insON(progLineType *pl) {
     symbolType *s = NULL;
     symbolType *i = NULL;
@@ -1177,12 +1208,14 @@ err:
 }
 
 
+/// @brief Parses POP.
 static int insPOP(progLineType *pl) {
     scanNext();
     return(progAppendInstruction(pl, kwPOP, NULL));
 }
 
 
+/// @brief Parses PRINT [<exp>] [{, | ;} [<exp>]]...
 static int insPRINT(progLineType *pl) {
     symbolType *s;
     symbolType *e;
@@ -1209,7 +1242,7 @@ static int insPRINT(progLineType *pl) {
         } else if (s->id == kwColon || s->id == kwEol || s->id == kwEof) {
             break;
         } else {
-            /* nothing above consumed this token, so stop rather than loop forever */
+            // Nothing above consumed this token, so stop rather than loop forever.
             utilError("unexpected %s in PRINT", scanDescribe(s));
             goto err;
         }
@@ -1248,6 +1281,7 @@ err:
 }
 
 
+/// @brief Parses READ <var> [,<var>]...
 static int insREAD(progLineType *pl) {
     symbolType **aa = NULL;
     symbolType **a = NULL;
@@ -1273,12 +1307,10 @@ static int insREAD(progLineType *pl) {
         scanNext();
         s = scanPeek();
         if (s->id == kwParenthesesOpen) {
-            /*
-             * <avar> | <string id> only (BNF). "String variables used in READ
-             * statements must be dimensioned and cannot be subscripted ...
-             * Neither may array variables be used", where an array variable
-             * is "the whole array or any element" (Manual, READ and section 1)
-             */
+            // <avar> | <string id> only (BNF). "String variables used in READ
+            // statements must be dimensioned and cannot be subscripted ...
+            // Neither may array variables be used", where an array variable
+            // is "the whole array or any element" (Manual, READ and section 1)
             utilError("READ takes only unsubscripted variables");
             goto err;
         }
@@ -1331,6 +1363,7 @@ err:
 }
 
 
+/// @brief Parses REM: the rest of the line.
 static int insREM(progLineType *pl) {
     symbolType *s = scanGetText();
     char *t;
@@ -1346,6 +1379,7 @@ static int insREM(progLineType *pl) {
 }
 
 
+/// @brief Parses RESTORE [<aexp>].
 static int insRESTORE(progLineType *pl) {
     symbolType *s;
     symbolType *e = NULL;
@@ -1368,18 +1402,21 @@ err:
 }
 
 
+/// @brief Parses RETURN.
 static int insRETURN(progLineType *pl) {
     scanNext();
     return(progAppendInstruction(pl, kwRETURN, NULL));
 }
 
 
+/// @brief Parses RUN.
 static int insRUN(progLineType *pl) {
     scanNext();
     return(progAppendInstruction(pl, kwRUN, NULL));
 }
 
 
+/// @brief Parses SAVE <sexp>.
 static int insSAVE(progLineType *pl) {
     symbolType *s = NULL;
     scanNext();
@@ -1399,12 +1436,14 @@ err:
 }
 
 
+/// @brief Parses STOP.
 static int insSTOP(progLineType *pl) {
     scanNext();
     return(progAppendInstruction(pl, kwSTOP, NULL));
 }
 
 
+/// @brief Parses TRAP <aexp>.
 static int insTRAP(progLineType *pl) {
     symbolType *s = NULL;
     scanNext();
@@ -1422,6 +1461,8 @@ err:
 }
 
 
+/// @brief Parses one statement, starting at its keyword (or a variable, for an
+/// assignment without LET), and adds it to line pl. Returns 0 or 1.
 static int statement(progLineType *pl) {
     symbolType *s = scanPeek();
     int rc = 0;
@@ -1518,7 +1559,7 @@ static int statement(progLineType *pl) {
             break;
         case kwIdentifier:
             if (!strcasecmp(s->value, "go")) {
-                /* GO TO is another way to write GOTO; insGOTO skips the TO */
+                // GO TO is another way to write GOTO; insGOTO skips the TO.
                 scanNext();
                 if (scanPeek()->id != kwTO) {
                     utilError("expecting TO after GO");
@@ -1538,29 +1579,28 @@ static int statement(progLineType *pl) {
 }
 
 
-/*
- * Does this token end a statement? Every statement leaves the token after its
- * last argument current, and that must be one of these.
- */
+/// @brief Tells whether a token ends a statement (':', end of line or input).
+/// @details Every statement leaves the token after its last argument current,
+/// and that must be one of these.
 static int endOfStatement(symbolType *s) {
     return(s->id == kwColon || s->id == kwEol || s->id == kwEof);
 }
 
 
+/// @brief Parses <statement> [: <statement>]... up to the end of the line,
+/// adding them to line pl. Returns 0, or 1 after a syntax error.
 static int compoundStatement(progLineType *pl) {
     symbolType *s;
     while (1) {
         s = scanPeek();
         if (s->id <= kwTRAP || s->id == kwIdentifier) {
-            /*
-             * Any error reported while parsing the statement fails it, even if
-             * the statement's own code carried on (PRINT (1 + 2 used to be
-             * stored as a bare PRINT after reporting the missing ')').
-             */
+            // Any error reported while parsing the statement fails it, even if
+            // the statement's own code carried on (PRINT (1 + 2 used to be
+            // stored as a bare PRINT after reporting the missing ')').
             if (statement(pl) || utilErrorReported()) {
                 return(1);
             }
-            /* statements are separated by ':' (GOTO 10 PRINT 1 is an error) */
+            // Statements are separated by ':' (GOTO 10 PRINT 1 is an error).
             s = scanPeek();
             if (!endOfStatement(s)) {
                 utilError("unexpected %s after statement", scanDescribe(s));
@@ -1578,11 +1618,10 @@ static int compoundStatement(progLineType *pl) {
 }
 
 
-/*
- * After a syntax error, show the line with a caret under the token where the
- * error was found (column, from scanTokenColumn() at the time of the error;
- * the rest of the line must already have been read).
- */
+/// @brief After a syntax error, shows the line with a caret under the token
+/// where the error was found.
+/// @details column comes from scanTokenColumn() at the time of the error; the
+/// rest of the line must already have been read.
 static void showSyntaxError(long column) {
     const char *text;
     size_t len;
@@ -1599,7 +1638,7 @@ static void showSyntaxError(long column) {
     }
     fflush(stdout);
     fprintf(stderr, "  %.*s\n  ", (int)len, text);
-    /* keep tabs, so the caret lines up however tabs are displayed */
+    // Keep tabs, so the caret lines up however tabs are displayed.
     for (i = 0; i < (size_t)column && i < len; i++) {
         fputc(text[i] == '\t' ? '\t' : ' ', stderr);
     }
@@ -1607,12 +1646,14 @@ static void showSyntaxError(long column) {
 }
 
 
+/// @brief Handles a line that starts with a line number: stores it in the
+/// program, or deletes the line if nothing follows the number.
 static void deferredStatement(void) {
     symbolType *s = scanPeek();
     long int lineNum = atol(s->value);
     progLineType pl;
     progLineType *p;
-    /* parse into a scratch line first, so a syntax error doesn't lose the old line */
+    // Parse into a scratch line first, so a syntax error doesn't lose the old line.
     memset(&pl, 0, sizeof(progLineType));
     pl.lineNum = lineNum;
     if (strchr(s->value, '.') != NULL || strchr(s->value, 'e') != NULL || strchr(s->value, 'E') != NULL || lineNum > MAX_LINE_NUMBER) {
@@ -1623,7 +1664,7 @@ static void deferredStatement(void) {
         scanConsumeEol();
         return;
     }
-    /* syntax errors in this line say "at line N" */
+    // Syntax errors in this line say "at line N".
     utilErrorLine(lineNum);
     scanNext();
     if (compoundStatement(&pl)) {
@@ -1632,7 +1673,7 @@ static void deferredStatement(void) {
         scanSkipLine();
         showSyntaxError(column);
     } else if (pl.firstInstruction == NULL) {
-        /* a line number on its own deletes the line */
+        // A line number on its own deletes the line.
         progRemoveLine(lineNum);
     } else if ((p = progInsertLine(lineNum)) == NULL) {
         utilError("couldn't allocate memory");
@@ -1645,6 +1686,7 @@ static void deferredStatement(void) {
 }
 
 
+/// @brief Handles a line without a line number: parses it and runs it at once.
 static void immediateStatement(void) {
     progLineType pl;
     memset(&pl, 0, sizeof(progLineType));
@@ -1652,7 +1694,7 @@ static void immediateStatement(void) {
     if (compoundStatement(&pl)) {
         long column = scanTokenColumn();
         progDeleteInstructions(pl.firstInstruction);
-        /* don't run what's left of the line as a new statement */
+        // Don't run what's left of the line as a new statement.
         scanSkipLine();
         showSyntaxError(column);
         goto err;

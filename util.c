@@ -1,5 +1,10 @@
-/*
- * util.c
+/**
+ * @file util.c
+ * @author Warren Mann (warren@nonvol.io)
+ * @brief Error reporting and string helpers.
+ * @version 0.0.1
+ * @date 2017-03-15
+ * @copyright Copyright (c) 2026
  */
 
 #include <stdarg.h>
@@ -9,29 +14,22 @@
 
 #include "util.h"
 
-
-/*
- * CONSTANTS
- */
-
+// The default for maxStringLen.
 #define MAX_STRING_LEN_DEF 128
 
-
-/*
- * DATA
- */
-
+/// @brief How much strmergez() grows its buffer by each time.
 unsigned long int sBufferIncrementz = 128;
 int maxStringLen = MAX_STRING_LEN_DEF;
 
-/* set once an error has been reported for the current line or instruction */
+/// @brief Set once an error has been reported for the current line or instruction.
 static int errorReported = 0;
-/* program line the current work belongs to, or -1 */
+/// @brief The program line the current work belongs to, or -1.
 static long errorLine = -1;
-/* record errors without printing them (a TRAP will handle them) */
+/// @brief Record errors without printing them (a TRAP will handle them).
 static int errorQuiet = 0;
-/* text and Atari error number (0 for a syntax error) of the most recent error */
+/// @brief The text of the most recent error.
 static char lastError[256] = "";
+/// @brief The Atari error number of the most recent error (0 for a syntax error).
 static int lastErrorCode = 0;
 
 static void errorRecord(int code, const char *s, va_list vl) UTIL_PRINTF(2, 0);
@@ -39,7 +37,7 @@ static void errorRecord(int code, const char *s, va_list vl) UTIL_PRINTF(2, 0);
 
 void aborts(const char *s, ...) {
     va_list vl;
-    /* send pending program output first, so the two streams stay in order */
+    // Send pending program output first, so the two streams stay in order.
     fflush(stdout);
     va_start(vl, s);
     fprintf(stderr, "ERROR: ");
@@ -66,12 +64,12 @@ void utilErrorN(int code, const char *s, ...) {
 }
 
 
+/// @brief Records an error, and prints it unless one has already been
+/// reported for this unit of work or errors are quiet.
 static void errorRecord(int code, const char *s, va_list vl) {
-    /*
-     * Only the first error is reported. It comes from the code that found the
-     * problem; the callers that then fail because of it would only add vaguer
-     * messages ("expecting statement", "couldn't evaluate expression").
-     */
+    // Only the first error is reported. It comes from the code that found the
+    // problem; the callers that then fail because of it would only add vaguer
+    // messages ("expecting statement", "couldn't evaluate expression").
     if (errorReported) {
         return;
     }
@@ -87,9 +85,9 @@ static void errorRecord(int code, const char *s, va_list vl) {
 
 void utilErrorShow(void) {
     char number[16] = "";
-    /* send pending program output first, so the two streams stay in order */
+    // Send pending program output first, so the two streams stay in order.
     fflush(stdout);
-    /* the Atari error number (Appendix B of the manual); syntax errors have none */
+    // The Atari error number (Appendix B of the manual); syntax errors have none.
     if (lastErrorCode > 0) {
         snprintf(number, sizeof(number), " %d", lastErrorCode);
     }
@@ -206,7 +204,7 @@ char **strsplitz(const char *s, const char *d) {
     }
     unsigned long dlen = strlen(d);
     unsigned long len = strlen(s) + 1;
-    /* n delimiters give n + 1 substrings (at most len), plus a NULL terminator */
+    // n delimiters give n + 1 substrings (at most len), plus a NULL terminator.
     unsigned long max_subs = len + 1;
     unsigned long sub = 0;
     unsigned long i;

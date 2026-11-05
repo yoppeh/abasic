@@ -1,16 +1,18 @@
-/*
- * io.h
+/**
+ * @file io.h
+ * @author Warren Mann (warren@nonvol.io)
+ * @brief Input for the interpreter: the terminal and LOADed files.
+ * @details A stack of open inputs is kept. Opening a file puts it on top, and
+ * input is taken from it; when it ends, it is closed and input continues
+ * from the one below, exactly where it left off. Standard input is at the
+ * bottom.
  *
- * Disk I/O module. As far as output, routines exist to create a new file (which
- * will truncate an existing file) or appending lines to a file. No open file
- * handle is maintained for output.
- *
- * For input, a stack of open files is maintained. Each time a new file is
- * opened, the currently open file is preserved. The new file is opened and the
- * input stream is taken from the file. Once the currently open file is closed,
- * the previously opened file again becomes the current one and input is taken
- * from it. When a file is preserved, it's file pointer and current buffer are
- * maintained and resumed when it again becomes active.
+ * Input is read one character at a time: ioNext() moves to the next
+ * character and ioPeek() returns the current one. The current line is kept
+ * so a syntax error can be shown in context.
+ * @version 0.0.1
+ * @date 2017-03-15
+ * @copyright Copyright (c) 2026
  */
 
 #ifndef IO_H
@@ -18,120 +20,70 @@
 
 #include <stddef.h>
 
-
-/*
- * GLOBAL CONSTANTS
- */
-
+// What ioNext() and ioPeek() return at the end of all input.
 #define IO_EOF 0
 
-
-/*
- * GLOBAL FUNCTIONS
- */
-
-
-/*
- * ioCloseInput
- *
- * Closes the current input file, and restores the previous input file, if any,
- * as the current one.
- *
- * Returns
- *
- *  0 = success
- *  1 = error
+/**
+ * @brief Closes the current input and makes the one below it current.
+ * @return 0.
  */
 extern int ioCloseInput(void);
 
-
-/*
- * ioInit
- *
- * Initialize the module.
- *
- * Returns
- *
- *  0 = success
- *  1 = error
+/**
+ * @brief Initializes the module.
+ * @details Arranges for every input to be closed at exit.
+ * @return 0.
  */
 extern int ioInit(void);
 
-
-/*
- * ioNext
- *
- * Return the current character from the input stream and advances the file
- * pointer to the next character.
- *
- * Returns
- *
- *  0 = EOF
- *  otherwise, the current character in the input stream.
+/**
+ * @brief Moves to the next character of input.
+ * @details At the end of a file, the file is closed and the current
+ * character of the input below it is returned.
+ * @return The new current character, or IO_EOF at the end of all input.
  */
 extern char ioNext(void);
 
-
-/*
- * ioOpenInput
- *
- * Set the input source to a filename (f). If f is NULL, stdin is used.
- *
- * Returns
- *
- *  0 = success
- *  1 = error
+/**
+ * @brief Makes a file, or standard input, the current input.
+ * @details Nothing is read until the next ioNext(). Until then the current
+ * character is a newline, so returning to an input that was never read
+ * looks like the start of a line rather than the end of input.
+ * @param f The file to read, or NULL for standard input.
+ * @return 0, or 1 if the file can't be opened or memory runs out.
  */
 extern int ioOpenInput(char *f);
 
-
-/*
- * ioPeek
- *
- * Return the current character from the current input stream, without reading
- * the next one (i.e. the file pointer is not advanced).
- *
- * Returns
- *
- *  0 = EOF
- *  otherwise, the current character in the input stream.
+/**
+ * @brief Returns the current character, without moving on.
+ * @return The current character, or IO_EOF at the end of all input.
  */
 extern char ioPeek(void);
 
-
-/*
- * ioColumn
- *
- * The 0-based column of the current character (the one ioPeek returns) in
- * its input line, or -1 if nothing has been read on this line.
+/**
+ * @brief Returns the column of the current character in its line.
+ * @return The 0-based column, or -1 if nothing has been read on this line.
  */
 extern long ioColumn(void);
 
-
-/*
- * ioLineText
- *
- * The current input line as read so far, up to and including the current
- * character (not NUL-terminated; the length is stored in *len). After the
- * rest of the line has been read, this is the whole line. Used to show where
- * a syntax error is.
+/**
+ * @brief Returns the current input line as read so far.
+ * @details The line runs up to and including the current character; once
+ * the rest of the line has been read, it is the whole line. Used to show
+ * where a syntax error is.
+ * @param len Set to the length of the line.
+ * @return The line, which isn't NUL-terminated, or NULL if there is no input.
  */
 extern const char *ioLineText(size_t *len);
 
-
-/*
- * ioReadLine
- *
- * Read the next line of standard input (for INPUT), without the newline.
- * Standard input is read through the same buffer the interpreter uses, so the
- * two never lose each other's data. The scanner's current character is not
- * affected.
- *
- * Returns
- *
- *  a newly allocated string, or NULL at end of input or on error.
+/**
+ * @brief Reads the next line of standard input, for INPUT.
+ * @details Standard input is read through the same buffer the interpreter
+ * uses, so the two never lose each other's data, even while a LOADed file is
+ * the current input. The current character isn't affected.
+ * @return A newly allocated string without the newline, or NULL at the end
+ * of input or if memory runs out.
  */
 extern char *ioReadLine(void);
 
-
-#endif /* IO_H */
+#endif // IO_H

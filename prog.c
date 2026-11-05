@@ -1,5 +1,14 @@
-/*
- * prog.c
+/**
+ * @file prog.c
+ * @author Warren Mann (warren@nonvol.io)
+ * @brief The program: its lines, their statements, and running them.
+ * @details Each kind of statement has a struct holding its parsed parts and
+ * three callbacks: progExecuteXXX() runs it, progFormatXXX() gives its source
+ * text for LIST and SAVE, and progFreeXXX() frees it. eval() evaluates
+ * expressions, producing every value as a string.
+ * @version 0.0.1
+ * @date 2017-03-15
+ * @copyright Copyright (c) 2026
  */
 
 #include <ctype.h>
@@ -22,51 +31,56 @@
 #include "util.h"
 #include "var.h"
 
-
-/*
- * DATA TYPES
- */
-
+/// @brief An assignment without LET; assignment is a kwAssignment node.
 typedef struct assignmentType {
     instructionType ins;
     symbolType *assignment;
 } assignmentType;
 
+/// @brief BYE.
 typedef struct byeType {
     instructionType ins;
 } byeType;
 
+/// @brief CLR.
 typedef struct clrType {
     instructionType ins;
 } clrType;
 
+/// @brief CLS.
 typedef struct clsType {
     instructionType ins;
 } clsType;
 
+/// @brief CONT.
 typedef struct contType {
     instructionType ins;
 } contType;
 
+/// @brief DATA; dataList is its items, from strsplitz().
 typedef struct dataType {
     instructionType ins;
     char **dataList;
 } dataType;
 
+/// @brief DEG.
 typedef struct degType {
     instructionType ins;
 } degType;
 
+/// @brief DIM; each of dimList is an identifier node with its sizes as l and r.
 typedef struct dimType {
     instructionType ins;
     symbolType **dimList;
     unsigned long int numElements;
 } dimType;
 
+/// @brief END.
 typedef struct endType {
     instructionType ins;
 } endType;
 
+/// @brief FOR; startPoint is the loop variable's assignment, step NULL if none.
 typedef struct forType {
     instructionType ins;
     symbolType *startPoint;
@@ -74,16 +88,20 @@ typedef struct forType {
     symbolType *step;
 } forType;
 
+/// @brief GOSUB.
 typedef struct gosubType {
     instructionType ins;
     symbolType *targetLine;
 } gosubType;
 
+/// @brief GOTO.
 typedef struct gotoType {
     instructionType ins;
     symbolType *targetLine;
 } gotoType;
 
+/// @brief IF; gotoOrInstructions is the THEN line number's expression if
+/// isGoto, otherwise the list of statements after THEN.
 typedef struct ifType {
     instructionType ins;
     symbolType *expression;
@@ -91,37 +109,44 @@ typedef struct ifType {
     char isGoto;
 } ifType;
 
+/// @brief INPUT; varList is its identifier nodes.
 typedef struct inputType {
     instructionType ins;
     symbolType **varList;
     unsigned long int numVars;
 } inputType;
 
+/// @brief LET; assignment is a kwAssignment node.
 typedef struct letType {
     instructionType ins;
     symbolType *assignment;
 } letType;
 
+/// @brief LIST; either line may be NULL.
 typedef struct listType {
     instructionType ins;
     symbolType *startLine;
     symbolType *endLine;
 } listType;
 
+/// @brief LOAD.
 typedef struct loadType {
     instructionType ins;
     symbolType *fileName;
 } loadType;
 
+/// @brief NEW.
 typedef struct newType {
     instructionType ins;
 } newType;
 
+/// @brief NEXT.
 typedef struct nextType {
     instructionType ins;
     symbolType *iteratorVar;
 } nextType;
 
+/// @brief ON; instruction is a GOTO or GOSUB node, targetList the line numbers.
 typedef struct onType {
     instructionType ins;
     symbolType *expression;
@@ -130,78 +155,91 @@ typedef struct onType {
     unsigned long int numTargets;
 } onType;
 
+/// @brief POP.
 typedef struct popType {
     instructionType ins;
 } popType;
 
+/// @brief PRINT; expressionList holds the values and the kwComma and
+/// kwSemicolon separators, in order.
 typedef struct printType {
     instructionType ins;
     symbolType **expressionList;
     unsigned long int numExpressions;
 } printType;
 
+/// @brief RAD.
 typedef struct radType {
     instructionType ins;
 } radType;
 
+/// @brief READ; varList is its identifier nodes.
 typedef struct readType {
     instructionType ins;
     symbolType **varList;
     unsigned long int numVars;
 } readType;
 
+/// @brief REM; remark is the rest of the line.
 typedef struct remType {
     instructionType ins;
     char *remark;
 } remType;
 
+/// @brief RESTORE; targetLine is NULL if there is none.
 typedef struct restoreType {
     instructionType ins;
     symbolType *targetLine;
 } restoreType;
 
+/// @brief RETURN.
 typedef struct returnType {
     instructionType ins;
 } returnType;
 
+/// @brief RUN.
 typedef struct runType {
     instructionType ins;
 } runType;
 
+/// @brief SAVE.
 typedef struct saveType {
     instructionType ins;
     symbolType *fileName;
 } saveType;
 
+/// @brief STOP.
 typedef struct stopType {
     instructionType ins;
 } stopType;
 
+/// @brief TRAP.
 typedef struct trapType {
     instructionType ins;
     symbolType *targetLine;
 } trapType;
 
-
-/*
- * LOCAL DATA
- */
-
-/*
- * Atari BASIC keeps FOR loops and GOSUB return points on one stack: RETURN
- * discards FOR entries above its GOSUB, and POP removes the top entry,
- * whichever kind it is (Reference Manual, POP).
- */
+// The most FOR loops and GOSUBs that can be active at once.
 #define MAX_CONTROL 1024
+
+/// @brief An entry of the FOR/GOSUB stack.
+/// @details isFor tells a FOR loop from a GOSUB return point; line is the
+/// line holding the FOR or GOSUB, and instruction the FOR or GOSUB itself.
 typedef struct {
-    int isFor;                      /* a FOR loop, or a GOSUB return point */
-    progLineType *line;             /* the line holding the FOR or GOSUB */
-    instructionType *instruction;   /* the FOR or GOSUB instruction itself */
+    int isFor;
+    progLineType *line;
+    instructionType *instruction;
 } controlType;
+
+/// @brief The FOR/GOSUB stack.
+/// @details Atari BASIC keeps FOR loops and GOSUB return points on one stack:
+/// RETURN discards FOR entries above its GOSUB, and POP removes the top entry,
+/// whichever kind it is (Reference Manual, POP).
 static controlType control[MAX_CONTROL];
+/// @brief The index of the top of the FOR/GOSUB stack, or -1 if it's empty.
 static long int controlTop = -1;
 
-/* Atari error numbers (Reference Manual, Appendix B) */
+// Atari error numbers (Reference Manual, Appendix B).
 #define ERR_MEMORY 2
 #define ERR_VALUE 3
 #define ERR_STRING_LENGTH 5
@@ -218,38 +256,36 @@ static long int controlTop = -1;
 #define ERR_FILE_NAME 165
 #define ERR_FILE_NOT_FOUND 170
 
-/* PRINT's comma moves to the next multiple of this column (PTABW) */
+// PRINT's comma moves to the next multiple of this column (PTABW).
 #define PRINT_TAB_WIDTH 10
-/* the output column, for PRINT's comma */
+/// @brief The output column, for PRINT's comma.
 static long int printColumn = 0;
 
+/// @brief The program's lines, in line number order.
 static progLineType *prog = NULL;
+/// @brief The line being run, or NULL when nothing is running.
 static progLineType *progCurrent = NULL;
-/* the TRAP line number, or -1 when no TRAP is set (the line needn't exist yet) */
+/// @brief The TRAP line number, or -1 when no TRAP is set (the line needn't exist yet).
 static long int progTrap = -1;
-/* the line where STOP or END happened; CONT resumes at the line after it */
+/// @brief The line where STOP or END happened; CONT resumes at the line after it.
 static progLineType *progStop = NULL;
-/* set by an instruction that moved progCurrent itself (GOTO, IF, NEXT, ...) */
+/// @brief Set by an instruction that moved progCurrent itself (GOTO, IF, NEXT, ...).
 static int progJumped = 0;
-/* set by progHalt() when the current instruction failed */
+/// @brief Set by progHalt() when the current instruction failed.
 static int progError = 0;
-/*
- * The last error a TRAP caught (for PEEK(195), ERR$) and the line of that
- * error or of the last STOP (for PEEK(186)/PEEK(187), ERL).
- */
+/// @brief The line of the last error a TRAP caught, or of the last STOP (for
+/// PEEK(186)/PEEK(187) and ERL).
 static long int progErrorLine = 0;
+/// @brief The Atari error number of the last error a TRAP caught (for PEEK(195)).
 static int progErrorCode = 0;
+/// @brief The message of the last error a TRAP caught (for ERR$).
 static char progErrorMessage[256] = "";
-/* DEG mode: SIN and COS take, and ATN returns, degrees instead of radians */
+/// @brief DEG mode: SIN and COS take, and ATN returns, degrees instead of radians.
 static int progDegrees = 0;
 
 #define PI 3.14159265358979323846
+/// @brief The message for a failed allocation.
 static char *memErr = "unable to allocate memory";
-
-
-/*
- * LOCAL FUNCTIONS
- */
 
 static void progExecute(void);
 static void progExecuteAssignment(void *vp);
@@ -346,6 +382,8 @@ static char *progGetVariable(symbolType *var);
 static double progTrig(keywords f, double x);
 static void progExecuteDEG(void *vp);
 static void progExecuteRAD(void *vp);
+static int numberResult(char *r, double d);
+static void progOutput(const char *s);
 
 
 int progAppendInstruction(progLineType *p, keywords keyword, ...) {
@@ -666,11 +704,9 @@ int progAppendInstruction(progLineType *p, keywords keyword, ...) {
         default:
             break;
     }
-    /*
-     * Failures inside the switch break out rather than jump to err, so that
-     * va_end always runs. i is NULL after a failed malloc (already reported)
-     * or an unsupported keyword.
-     */
+    // Failures inside the switch break out rather than jump to err, so that
+    // va_end always runs. i is NULL after a failed malloc (already reported)
+    // or an unsupported keyword.
     va_end(vl);
     if (i == NULL) {
         utilError("unsupported instruction");
@@ -690,9 +726,7 @@ err:
 }
 
 
-/*
- * Evaluate an expression and convert it to a number. Returns 0 on success.
- */
+/// @brief Evaluates an expression as a number; returns 0, or 1 if it fails.
 static int evalDouble(symbolType *e, double *out) {
     char *s = eval(e);
     if (s == NULL) {
@@ -704,16 +738,16 @@ static int evalDouble(symbolType *e, double *out) {
 }
 
 
-/*
- * Evaluate an expression used as an integer (line number, subscript, ...).
- * As the BNF says ("rounded to integer"), Atari BASIC rounds, so 2.5 is 3.
- */
+/// @brief Evaluates an expression used as an integer (line number,
+/// subscript, ...); returns 0, or 1 if it fails.
+/// @details As the BNF says ("rounded to integer"), Atari BASIC rounds, so
+/// 2.5 is 3.
 static int evalLong(symbolType *e, long *out) {
     double d;
     if (evalDouble(e, &d)) {
         return(1);
     }
-    /* converting an out-of-range double to an integer is undefined */
+    // Converting an out-of-range double to an integer is undefined.
     if (!(d > -2147483648.0 && d < 2147483647.0)) {
         utilErrorN(ERR_VALUE, "value out of range");
         return(1);
@@ -723,12 +757,11 @@ static int evalLong(symbolType *e, long *out) {
 }
 
 
-/*
- * Evaluate the optional subscripts of an identifier node (l and r). Missing
- * subscripts are -1. Returns 0 on success.
- */
+/// @brief Evaluates the optional subscripts of an identifier node (l and r);
+/// returns 0, or 1 if one fails.
+/// @details Missing subscripts are -1.
 static int evalSubscripts(symbolType *var, long *d1, long *d2) {
-    /* -1: no such subscript */
+    // -1: no such subscript.
     *d1 = -1;
     *d2 = -1;
     if (var->l != NULL && evalLong(var->l, d1)) {
@@ -741,10 +774,8 @@ static int evalSubscripts(symbolType *var, long *d1, long *d2) {
 }
 
 
-/*
- * Execute an assignment node (l = identifier, r = expression). On failure the
- * program is halted and 1 is returned.
- */
+/// @brief Runs an assignment node (l = identifier, r = expression).
+/// @details On failure the program is halted and 1 is returned.
 static int progAssign(symbolType *a) {
     char *value = NULL;
     if ((value = eval(a->r)) == NULL || progSetVariable(a->l, value)) {
@@ -757,10 +788,8 @@ static int progAssign(symbolType *a) {
 }
 
 
-/*
- * Called before a program line is freed: drop everything that might still
- * point at it (or at its instructions).
- */
+/// @brief Drops everything that might still point at a program line, or at
+/// its instructions, before the line is freed.
 static void progForgetLine(progLineType *p) {
     controlTop = -1;
     if (progStop == p) {
@@ -769,19 +798,18 @@ static void progForgetLine(progLineType *p) {
 }
 
 
-/*
- * Report that the current instruction failed (after printing the error).
- * progExecute then jumps to the TRAP line, if one is set, or stops the program.
- */
+/// @brief Reports that the current instruction failed (after the error has
+/// been reported).
+/// @details progExecute() then jumps to the TRAP line, if one is set, or
+/// stops the program.
 static void progHalt(void) {
     progError = 1;
 }
 
 
-/*
- * An immediate-mode line lives on the caller's stack and its instructions are
- * freed after it runs, so remove any FOR or GOSUB entries that still refer to it.
- */
+/// @brief Removes any FOR or GOSUB entries that refer to an immediate-mode line.
+/// @details The line lives on the caller's stack and its instructions are
+/// freed after it runs.
 static void progPurgeImmediateLine(progLineType *p) {
     long int i;
     long int j = 0;
@@ -794,9 +822,8 @@ static void progPurgeImmediateLine(progLineType *p) {
 }
 
 
-/*
- * sprintf into a newly allocated string of exactly the right size.
- */
+/// @brief Like sprintf, into a newly allocated string of exactly the right
+/// size; returns NULL if memory runs out.
 static char *strfmt(const char *fmt, ...) {
     va_list vl;
     int n;
@@ -815,19 +842,19 @@ static char *strfmt(const char *fmt, ...) {
 }
 
 
-/*
- * Format a number the way it is printed and stored: integers without a
- * decimal point, other values with up to 15 significant digits and no
- * trailing zeros.
- */
+/// @brief Formats a number the way it is printed and stored.
+/// @details Integers have no decimal point; other values have up to 15
+/// significant digits and no trailing zeros.
 static void formatNumber(char *buf, size_t size, double d) {
     if (d == 0) {
-        d = 0; /* print -0 as 0 */
+        // Print -0 as 0.
+        d = 0;
     }
     snprintf(buf, size, "%.15g", d);
 }
 
 
+/// @brief Returns the program line numbered lineNum, or NULL.
 static progLineType *progFindLine(long int lineNum) {
     progLineType *p = prog;
     while (p != NULL && p->lineNum != lineNum) {
@@ -837,10 +864,9 @@ static progLineType *progFindLine(long int lineNum) {
 }
 
 
-/*
- * Continue execution at instruction i of line p (its first instruction if i
- * is NULL). A NULL line ends the program.
- */
+/// @brief Continues execution at instruction i of line p (its first
+/// instruction if i is NULL).
+/// @details A NULL line ends the program.
 static void progJump(progLineType *p, instructionType *i) {
     progCurrent = p;
     if (p != NULL) {
@@ -850,10 +876,8 @@ static void progJump(progLineType *p, instructionType *i) {
 }
 
 
-/*
- * Continue execution with whatever follows instruction i of line p: the next
- * instruction, or the start of the next line.
- */
+/// @brief Continues execution with whatever follows instruction i of line p:
+/// the next instruction, or the start of the next line.
 static void progJumpAfter(progLineType *p, instructionType *i) {
     if (i != NULL && i->next != NULL) {
         progJump(p, i->next);
@@ -863,10 +887,9 @@ static void progJumpAfter(progLineType *p, instructionType *i) {
 }
 
 
-/*
- * Store a value in a variable. Numeric variables (no '$') always hold a
- * normalized number, so INPUT "007" stores 7.
- */
+/// @brief Stores a value in a variable reference; returns 0, or 1 after an error.
+/// @details Numeric variables (no '$') always hold a normalized number, so
+/// INPUT "007" stores 7.
 static int progSetVariable(symbolType *var, const char *value) {
     char num[64];
     char *old = NULL;
@@ -880,14 +903,12 @@ static int progSetVariable(symbolType *var, const char *value) {
         formatNumber(num, sizeof(num), strtod(value, NULL));
         return(varSetValue(var->value, num, d1, d2));
     }
-    /* A$ = value: the whole string (varSetValue cuts it to the DIM size) */
+    // A$ = value: the whole string (varSetValue cuts it to the DIM size).
     if (var->l == NULL) {
         return(varSetValue(var->value, value, -1, -1));
     }
-    /*
-     * A$(i) = value: replace from character i on; the string ends after the
-     * new text. A$(i,j) = value: overwrite characters i to j, keeping the rest.
-     */
+    // A$(i) = value: replace from character i on; the string ends after the
+    // new text. A$(i,j) = value: overwrite characters i to j, keeping the rest.
     if ((max = varStringMax(var->value)) < 0 || evalLong(var->l, &d1)) {
         return(1);
     }
@@ -915,7 +936,7 @@ static int progSetVariable(symbolType *var, const char *value) {
         utilErrorN(ERR_MEMORY, "%s", memErr);
         goto done;
     }
-    /* a gap between the old end and i is filled with spaces */
+    // A gap between the old end and i is filled with spaces.
     memset(s, ' ', (size_t)newLen);
     memcpy(s, old, (size_t)(len < newLen ? len : newLen));
     memcpy(s + d1 - 1, value, (size_t)n);
@@ -928,10 +949,10 @@ done:
 }
 
 
-/*
- * The value of a variable reference. For a string, A$(i) is character i to
- * the end and A$(i,j) is characters i to j.
- */
+/// @brief Returns the value of a variable reference, newly allocated, or NULL
+/// after an error.
+/// @details For a string, A$(i) is character i to the end and A$(i,j) is
+/// characters i to j.
 static char *progGetVariable(symbolType *var) {
     char *s;
     char *sub;
@@ -951,7 +972,7 @@ static char *progGetVariable(symbolType *var) {
         free(s);
         return(NULL);
     }
-    /* "The starting location cannot be greater than the current length of the string" */
+    // "The starting location cannot be greater than the current length of the string."
     if (d1 < 1 || d1 > len || d2 > len || d2 < d1) {
         utilErrorN(ERR_STRING_LENGTH, "string index out of range");
         free(s);
@@ -966,10 +987,9 @@ static char *progGetVariable(symbolType *var) {
 }
 
 
-/*
- * SIN, COS or ATN, in degrees when DEG is on. Whole multiples of 90 degrees
- * give exact results, so SIN(180) is 0 rather than 1.2e-16.
- */
+/// @brief Returns SIN, COS or ATN of x, in degrees when DEG is on.
+/// @details Whole multiples of 90 degrees give exact results, so SIN(180) is
+/// 0 rather than 1.2e-16.
 static double progTrig(keywords f, double x) {
     static const double quarterSin[4] = { 0, 1, 0, -1 };
     long q;
@@ -1030,6 +1050,7 @@ void progDeleteLine(progLineType *p) {
 }
 
 
+/// @brief Runs from progCurrent until the program ends, stops or fails.
 static void progExecute(void) {
     instructionType *i;
     progLineType *p;
@@ -1041,20 +1062,20 @@ static void progExecute(void) {
         line = progCurrent->lineNum;
         progJumped = 0;
         progError = 0;
-        /* each instruction may report its own error */
+        // Each instruction may report its own error.
         utilErrorReset();
         if (line != -1) {
-            /* errors say which line; with a TRAP set, the program handles them instead */
+            // Errors say which line; with a TRAP set, the program handles them instead.
             utilErrorLine(line);
             utilErrorQuiet(progTrap != -1);
         }
         i->executeFunc(i);
         if (progError) {
             progError = 0;
-            /* TRAP catches one error in a program line, then has to be set again */
+            // TRAP catches one error in a program line, then has to be set again.
             if (progTrap != -1 && line != -1) {
                 long int target = progTrap;
-                /* for PEEK(195), PEEK(186)/PEEK(187), ERL and ERR$ */
+                // For PEEK(195), PEEK(186)/PEEK(187), ERL and ERR$.
                 progErrorLine = line;
                 progErrorCode = utilLastErrorCode();
                 snprintf(progErrorMessage, sizeof(progErrorMessage), "%s", utilLastError());
@@ -1063,7 +1084,7 @@ static void progExecute(void) {
                     progJump(p, NULL);
                     continue;
                 }
-                /* the TRAP line doesn't exist: show the error after all, then that */
+                // The TRAP line doesn't exist: show the error after all, then that.
                 utilErrorShow();
                 utilErrorReset();
                 utilErrorLine(line);
@@ -1075,7 +1096,7 @@ static void progExecute(void) {
         if (keyword == kwRUN || keyword == kwSTOP || keyword == kwEND) {
             return;
         }
-        /* instructions that didn't move execution themselves fall through to the next one */
+        // Instructions that didn't move execution themselves fall through to the next one.
         if (!progJumped && progCurrent != NULL) {
             progJumpAfter(progCurrent, i);
         }
@@ -1083,50 +1104,56 @@ static void progExecute(void) {
 }
 
 
+/// @brief Runs an assignment without LET.
 static void progExecuteAssignment(void *vp) {
     progAssign(((assignmentType *)vp)->assignment);
 }
 
 
+/// @brief Runs BYE: leaves the interpreter.
 static void progExecuteBYE(void *vp) {
     exit(0);
 }
 
 
+/// @brief Runs CLR.
 static void progExecuteCLR(void *vp) {
-    /* variables only: the DATA list and pointer are untouched */
+    // Variables only: the DATA list and pointer are untouched.
     varClearVariables();
 }
 
 
+/// @brief Runs DEG.
 static void progExecuteDEG(void *vp) {
     progDegrees = 1;
 }
 
 
+/// @brief Runs RAD.
 static void progExecuteRAD(void *vp) {
     progDegrees = 0;
 }
 
 
+/// @brief Runs CLS: clears the screen.
 static void progExecuteCLS(void *vp) {
     system("clear");
 }
 
 
+/// @brief Runs CONT.
 static void progExecuteCONT(void *vp) {
     progLineType *p = progStop;
     if (p != NULL) {
         progStop = NULL;
-        /*
-         * "On CONT, execution resumes at the next numbered line": statements
-         * after the STOP or END on the same line are not run (Manual, CONT).
-         */
+        // "On CONT, execution resumes at the next numbered line": statements
+        // after the STOP or END on the same line are not run (Manual, CONT).
         progJump(p->next, NULL);
     }
 }
 
 
+/// @brief Runs DATA: adds its items to the DATA list, if they aren't there yet.
 static void progExecuteDATA(void *vp) {
     long int lineNum = -1;
     if (progCurrent != NULL) {
@@ -1136,13 +1163,14 @@ static void progExecuteDATA(void *vp) {
 }
 
 
+/// @brief Runs DIM.
 static void progExecuteDIM(void *vp) {
     dimType *dt = (dimType *)vp;
     unsigned long int i;
     long d1;
     long d2;
     for (i = 0UL; i < dt->numElements; i++) {
-        /* varDim reports what's wrong (already dimensioned, size, ...) */
+        // varDim reports what's wrong (already dimensioned, size, ...).
         if (evalSubscripts(dt->dimList[i], &d1, &d2) || varDim(dt->dimList[i]->value, d1, d2)) {
             progHalt();
             return;
@@ -1151,22 +1179,22 @@ static void progExecuteDIM(void *vp) {
 }
 
 
+/// @brief Runs END.
 static void progExecuteEND(void *vp) {
-    /* "Program may be restarted using CONT" (Manual, Appendix A) */
+    // "Program may be restarted using CONT" (Manual, Appendix A).
     if (progCurrent != NULL && progCurrent->lineNum != -1) {
         progStop = progCurrent;
     }
 }
 
 
+/// @brief Runs FOR: sets the loop variable and pushes the loop.
 static void progExecuteFOR(void *vp) {
     forType *fp = (forType *)vp;
     long int top;
-    /*
-     * Running a FOR for a variable that already has an active loop (e.g. by
-     * jumping back to the FOR line) restarts it: drop that loop and any loops
-     * inside it, so the stack doesn't grow.
-     */
+    // Running a FOR for a variable that already has an active loop (e.g. by
+    // jumping back to the FOR line) restarts it: drop that loop and any loops
+    // inside it, so the stack doesn't grow.
     for (top = controlTop; top >= 0; top--) {
         if (control[top].isFor && !strcasecmp(((forType *)control[top].instruction)->startPoint->l->value, fp->startPoint->l->value)) {
             controlTop = top - 1;
@@ -1188,6 +1216,7 @@ static void progExecuteFOR(void *vp) {
 }
 
 
+/// @brief Runs GOSUB.
 static void progExecuteGOSUB(void *vp) {
     gosubType *gp = (gosubType *)vp;
     progLineType *p;
@@ -1204,7 +1233,7 @@ static void progExecuteGOSUB(void *vp) {
         utilErrorN(ERR_STACK, "too many nested FOR loops and GOSUBs");
         goto err;
     }
-    /* RETURN resumes after this instruction, so the rest of the line still runs */
+    // RETURN resumes after this instruction, so the rest of the line still runs.
     controlTop++;
     control[controlTop].isFor = 0;
     control[controlTop].line = progCurrent;
@@ -1216,6 +1245,7 @@ err:
 }
 
 
+/// @brief Runs GOTO.
 static void progExecuteGOTO(void *vp) {
     gotoType *gp = (gotoType *)vp;
     progLineType *p;
@@ -1235,6 +1265,7 @@ err:
 }
 
 
+/// @brief Runs IF.
 static void progExecuteIF(void *vp) {
     ifType *ip = (ifType *)vp;
     progLineType *p;
@@ -1244,11 +1275,11 @@ static void progExecuteIF(void *vp) {
         goto err;
     }
     if (condition == 0) {
-        /* false: skip the rest of the line */
+        // False: skip the rest of the line.
         progJump(progCurrent->next, NULL);
         return;
     }
-    /* any nonzero value is true */
+    // Any nonzero value is true.
     if (ip->isGoto) {
         if (evalLong(ip->gotoOrInstructions, &l)) {
             goto err;
@@ -1267,12 +1298,12 @@ err:
 }
 
 
-/*
- * INPUT shows a ? prompt. "Arithmetic numbers can be typed on the same line
- * separated by commas"; a string takes a line of its own, or the rest of the
- * current one after a comma. When a line runs out, ? asks for another.
- * Non-numeric input for a numeric variable is error 8 (Manual, INPUT).
- */
+/// @brief Runs INPUT.
+/// @details INPUT shows a ? prompt. "Arithmetic numbers can be typed on the
+/// same line separated by commas"; a string takes a line of its own, or the
+/// rest of the current one after a comma. When a line runs out, ? asks for
+/// another. Non-numeric input for a numeric variable is error 8 (Manual,
+/// INPUT).
 static void progExecuteINPUT(void *vp) {
     inputType *ip = (inputType *)vp;
     char *line = NULL;
@@ -1285,9 +1316,9 @@ static void progExecuteINPUT(void *vp) {
         if (pos == NULL) {
             free(line);
             fputs("?", stdout);
-            /* show the prompt before waiting for input */
+            // Show the prompt before waiting for input.
             fflush(stdout);
-            /* read through the io module, which shares stdin with the program reader */
+            // Read through the io module, which shares stdin with the program reader.
             if ((line = ioReadLine()) == NULL) {
                 utilErrorN(ERR_EOF, "end of input");
                 goto err;
@@ -1304,7 +1335,7 @@ static void progExecuteINPUT(void *vp) {
         }
         d = strtod(pos, &end);
         if (end == pos) {
-            /* nothing but spaces before the comma or the end (just RETURN) reads as 0 */
+            // Nothing but spaces before the comma or the end (just RETURN) reads as 0.
             while (isspace((unsigned char)*end)) {
                 end++;
             }
@@ -1335,13 +1366,14 @@ err:
 }
 
 
+/// @brief Runs LET.
 static void progExecuteLET(void *vp) {
     progAssign(((letType *)vp)->assignment);
 }
 
 
 void progExecuteLine(progLineType *p) {
-    /* a line typed at the prompt starts at the left margin */
+    // A line typed at the prompt starts at the left margin.
     printColumn = 0;
     progCurrent = p;
     if (progCurrent) {
@@ -1354,6 +1386,7 @@ void progExecuteLine(progLineType *p) {
 }
 
 
+/// @brief Runs LIST.
 static void progExecuteLIST(void *vp) {
     listType *lp = (listType *)vp;
     long int l1 = -1;
@@ -1363,7 +1396,7 @@ static void progExecuteLIST(void *vp) {
         return;
     }
     if (lp->endLine == NULL) {
-        /* LIST n lists only line n */
+        // LIST n lists only line n.
         l2 = l1;
     } else if (evalLong(lp->endLine, &l2)) {
         progHalt();
@@ -1375,6 +1408,7 @@ static void progExecuteLIST(void *vp) {
 }
 
 
+/// @brief Runs LOAD.
 static void progExecuteLOAD(void *vp) {
     loadType *lp = (loadType *)vp;
     char *fn;
@@ -1386,10 +1420,8 @@ static void progExecuteLOAD(void *vp) {
         utilErrorN(ERR_FILE_NOT_FOUND, "couldn't open [%s]", fn);
         progHalt();
     } else {
-        /*
-         * "LOAD ... clear[s] the old program from memory before loading the
-         * new one" (Manual, ENTER). The file is read as input from here on.
-         */
+        // "LOAD ... clear[s] the old program from memory before loading the
+        // new one" (Manual, ENTER). The file is read as input from here on.
         progNew();
         progCurrent = NULL;
     }
@@ -1397,13 +1429,15 @@ static void progExecuteLOAD(void *vp) {
 }
 
 
+/// @brief Runs NEW.
 static void progExecuteNEW(void *vp) {
     progNew();
-    /* the line being executed was just freed */
+    // The line being executed was just freed.
     progCurrent = NULL;
 }
 
 
+/// @brief Runs NEXT: steps the loop variable and loops, or ends the loop.
 static void progExecuteNEXT(void *vp) {
     nextType *np = (nextType *)vp;
     forType *fp = NULL;
@@ -1414,11 +1448,9 @@ static void progExecuteNEXT(void *vp) {
     long dim2;
     long int top;
     char d[64];
-    /*
-     * Find the loop for this variable; loops started inside it are abandoned.
-     * The search stops at a GOSUB: a NEXT can't close a loop from outside the
-     * subroutine.
-     */
+    // Find the loop for this variable; loops started inside it are abandoned.
+    // The search stops at a GOSUB: a NEXT can't close a loop from outside the
+    // subroutine.
     for (top = controlTop; top >= 0 && control[top].isFor; top--) {
         fp = (forType *)control[top].instruction;
         if (!strcasecmp(fp->startPoint->l->value, np->iteratorVar->value)) {
@@ -1445,17 +1477,17 @@ static void progExecuteNEXT(void *vp) {
         goto err;
     }
     formatNumber(d, sizeof(d), i + k);
-    /* compare the value actually stored, so the last pass matches what the program sees */
+    // Compare the value actually stored, so the last pass matches what the program sees.
     i = strtod(d, NULL);
     if (varSetValue(fp->startPoint->l->value, d, dim1, dim2)) {
         goto err;
     }
     if (k >= 0 ? i > j : i < j) {
-        /* loop finished: carry on after the NEXT */
+        // Loop finished: carry on after the NEXT.
         controlTop--;
         return;
     }
-    /* go round again, starting after the FOR */
+    // Go round again, starting after the FOR.
     progJumpAfter(control[controlTop].line, control[controlTop].instruction);
     return;
 err:
@@ -1463,16 +1495,15 @@ err:
 }
 
 
+/// @brief Runs ON ... GOTO or ON ... GOSUB.
 static void progExecuteON(void *vp) {
     onType *op = (onType *)vp;
     progLineType plt;
     long int exp;
-    /*
-     * "The aexp must evaluate to a positive number which is then rounded to
-     * the nearest positive integer ... up to 255. If the resulting number is 0
-     * or is greater than the number of linenos in the list" control passes to
-     * the next statement (Manual, ON).
-     */
+    // "The aexp must evaluate to a positive number which is then rounded to
+    // the nearest positive integer ... up to 255. If the resulting number is 0
+    // or is greater than the number of linenos in the list" control passes to
+    // the next statement (Manual, ON).
     if (evalLong(op->expression, &exp)) {
         progHalt();
         return;
@@ -1492,14 +1523,15 @@ static void progExecuteON(void *vp) {
                 return;
             }
             plt.firstInstruction->executeFunc(plt.firstInstruction);
-            /* the target expression belongs to this ON, so free only the wrapper */
+            // The target expression belongs to this ON, so free only the wrapper.
             free(plt.firstInstruction);
         }
     }
 }
 
 
-/* remove the top entry of the FOR/GOSUB stack, whichever kind it is */
+/// @brief Runs POP: removes the top entry of the FOR/GOSUB stack, whichever
+/// kind it is.
 static void progExecutePOP(void *vp) {
     if (controlTop >= 0) {
         controlTop--;
@@ -1507,7 +1539,7 @@ static void progExecutePOP(void *vp) {
 }
 
 
-/* write program output, keeping track of the column for PRINT's comma */
+/// @brief Writes program output, keeping track of the column for PRINT's comma.
 static void progOutput(const char *s) {
     for (; *s != 0; s++) {
         putchar(*s);
@@ -1516,19 +1548,18 @@ static void progOutput(const char *s) {
 }
 
 
+/// @brief Runs PRINT.
 static void progExecutePRINT(void *vp) {
     printType *pp = (printType *)vp;
     char *expression = NULL;
     unsigned long int i;
-    /*
-     * Each value ends the line unless a ',' (tab) or ';' follows it, so the
-     * newline is held back until we know what comes next.
-     */
+    // Each value ends the line unless a ',' (tab) or ';' follows it, so the
+    // newline is held back until we know what comes next.
     int pendingNewline = 0;
     for (i = 0; i < pp->numExpressions; i++) {
         if (pp->expressionList[i]->id == kwComma) {
             pendingNewline = 0;
-            /* "A comma causes tabbing to the next tab location", every 10 columns */
+            // "A comma causes tabbing to the next tab location", every 10 columns.
             do {
                 progOutput(" ");
             } while (printColumn % PRINT_TAB_WIDTH != 0);
@@ -1554,6 +1585,7 @@ static void progExecutePRINT(void *vp) {
 }
 
 
+/// @brief Runs READ.
 static void progExecuteREAD(void *vp) {
     readType *rp = (readType *)vp;
     char *s = NULL;
@@ -1564,7 +1596,7 @@ static void progExecuteREAD(void *vp) {
             utilErrorN(ERR_OUT_OF_DATA, "out of data");
             goto err;
         }
-        /* "the data type in the DATA statement must match the variable type" */
+        // "The data type in the DATA statement must match the variable type."
         if (strchr(rp->varList[i]->value, '$') == NULL && s[0] != 0) {
             strtod(s, &end);
             if (end == s || *end != 0) {
@@ -1585,10 +1617,12 @@ err:
 }
 
 
+/// @brief Runs REM: does nothing.
 static void progExecuteREM(void *vp) {
 }
 
 
+/// @brief Runs RESTORE.
 static void progExecuteRESTORE(void *vp) {
     restoreType *rp = (restoreType *)vp;
     long int line = -1;
@@ -1600,9 +1634,10 @@ static void progExecuteRESTORE(void *vp) {
 }
 
 
+/// @brief Runs RETURN.
 static void progExecuteRETURN(void *vp) {
     long int top;
-    /* FOR loops started inside the subroutine are discarded with it */
+    // FOR loops started inside the subroutine are discarded with it.
     for (top = controlTop; top >= 0 && control[top].isFor; top--) {
     }
     if (top < 0) {
@@ -1611,11 +1646,13 @@ static void progExecuteRETURN(void *vp) {
         return;
     }
     controlTop = top - 1;
-    /* resume after the GOSUB (or the ON ... GOSUB) */
+    // Resume after the GOSUB (or the ON ... GOSUB).
     progJumpAfter(control[top].line, control[top].instruction);
 }
 
 
+/// @brief Runs RUN: clears variables, collects the DATA lines and runs the
+/// program from the start.
 static void progExecuteRUN(void *vp) {
     varClearAll();
     controlTop = -1;
@@ -1638,6 +1675,7 @@ static void progExecuteRUN(void *vp) {
 }
 
 
+/// @brief Runs SAVE: writes the program's listing to a file.
 static void progExecuteSAVE(void *vp) {
     saveType *sp = (saveType *)vp;
     char *fn = eval(sp->fileName);
@@ -1665,12 +1703,13 @@ err:
 }
 
 
+/// @brief Runs STOP.
 static void progExecuteSTOP(void *vp) {
     char message[64];
     if (progCurrent != NULL && progCurrent->lineNum != -1) {
-        /* CONT resumes at the line after this one */
+        // CONT resumes at the line after this one.
         progStop = progCurrent;
-        /* PEEK(186)/PEEK(187) give the line of a STOP too */
+        // PEEK(186)/PEEK(187) give the line of a STOP too.
         progErrorLine = progCurrent->lineNum;
         snprintf(message, sizeof(message), "%sSTOPPED AT LINE %ld\n", printColumn != 0 ? "\n" : "", progCurrent->lineNum);
         progOutput(message);
@@ -1678,6 +1717,7 @@ static void progExecuteSTOP(void *vp) {
 }
 
 
+/// @brief Runs TRAP.
 static void progExecuteTRAP(void *vp) {
     trapType *tp = (trapType *)vp;
     long int l;
@@ -1690,20 +1730,20 @@ static void progExecuteTRAP(void *vp) {
         progHalt();
         return;
     }
-    /*
-     * The line is looked up when an error happens, so it needn't exist yet.
-     * "The TRAP may be cleared by executing a TRAP statement with an aexp whose
-     * value is from 32767 to 65535 (e.g., 40000)" (Manual, TRAP).
-     */
+    // The line is looked up when an error happens, so it needn't exist yet.
+    // "The TRAP may be cleared by executing a TRAP statement with an aexp whose
+    // value is from 32767 to 65535 (e.g., 40000)" (Manual, TRAP).
     progTrap = l < 32767 ? l : -1;
 }
 
 
+/// @brief Frees the program, at exit.
 static void progExit(void) {
     progNew();
 }
 
 
+/// @brief Returns the source text of an assignment without LET.
 static char *progFormatAssignment(void *vp) {
     assignmentType *ap = (assignmentType *)vp;
     char *s;
@@ -1717,6 +1757,7 @@ static char *progFormatAssignment(void *vp) {
 }
 
 
+/// @brief Returns the source text of a DATA statement.
 static char *progFormatDATA(void *vp) {
     char *l = strmergez((const char **)((dataType *)vp)->dataList, ",");
     char *s;
@@ -1735,18 +1776,20 @@ static char *progFormatDATA(void *vp) {
 }
 
 
+/// @brief Returns the source text of a statement that is just its keyword.
 static char *progFormatDefault(void *vp) {
     return(strdup(scanGetKeyword(((instructionType *)vp)->keyword)));
 }
 
 
+/// @brief Returns the source text of a DIM statement.
 static char *progFormatDIM(void *vp) {
     dimType *dt = (dimType *)vp;
     char **parts = NULL;
     char *list = NULL;
     char *s = NULL;
     unsigned long int i;
-    /* one string per element, e.g. "A(10)" or "B(N,2)", joined with commas */
+    // One string per element, e.g. "A(10)" or "B(N,2)", joined with commas.
     if ((parts = calloc(dt->numElements + 1, sizeof(char *))) == NULL) {
         utilErrorN(ERR_MEMORY, "%s", memErr);
         return(NULL);
@@ -1769,6 +1812,7 @@ done:
 }
 
 
+/// @brief Returns the source text of a FOR statement.
 static char *progFormatFOR(void *vp) {
     forType *ft = (forType *)vp;
     char *s = NULL;
@@ -1820,6 +1864,7 @@ err:
 }
 
 
+/// @brief Returns the source text of a GOSUB statement.
 static char *progFormatGOSUB(void *vp) {
     gosubType *gt = (gosubType *)vp;
     char *t = NULL;
@@ -1850,6 +1895,7 @@ err:
 }
 
 
+/// @brief Returns the source text of a GOTO statement.
 static char *progFormatGOTO(void *vp) {
     gotoType *gt = (gotoType *)vp;
     char *t = NULL;
@@ -1880,6 +1926,7 @@ err:
 }
 
 
+/// @brief Returns the source text of an IF statement.
 static char *progFormatIF(void *vp) {
     ifType *ft = (ifType *)vp;
     char *s = NULL;
@@ -1934,6 +1981,7 @@ err:
 }
 
 
+/// @brief Returns the source text of an INPUT statement.
 static char *progFormatINPUT(void *vp) {
     inputType *ip = (inputType *)vp;
     unsigned long int i;
@@ -1980,6 +2028,7 @@ err:
 }
 
 
+/// @brief Returns the source text of a LET statement.
 static char *progFormatLET(void *vp) {
     letType *lp = (letType *)vp;
     char *s = NULL;
@@ -2008,6 +2057,7 @@ err:
 }
 
 
+/// @brief Returns the source text of a LIST statement.
 static char *progFormatLIST(void *vp) {
     listType *lt = (listType *)vp;
     unsigned long int len = 3;
@@ -2057,6 +2107,7 @@ err:
 }
 
 
+/// @brief Returns the source text of a LOAD statement.
 static char *progFormatLOAD(void *vp) {
     loadType *lt = (loadType *)vp;
     char *s = NULL;
@@ -2084,6 +2135,7 @@ err:
 }
 
 
+/// @brief Returns the source text of a NEXT statement.
 static char *progFormatNEXT(void *vp) {
     nextType *nt = (nextType *)vp;
     char *s = NULL;
@@ -2111,6 +2163,7 @@ err:
 }
 
 
+/// @brief Returns the source text of an ON statement.
 static char *progFormatON(void *vp) {
     onType *ot = (onType *)vp;
     char *s = NULL;
@@ -2168,6 +2221,7 @@ err:
 }
 
 
+/// @brief Returns the source text of a PRINT statement.
 static char *progFormatPRINT(void *vp) {
     printType *pp = (printType *)vp;
     char *s = NULL;
@@ -2192,7 +2246,7 @@ static char *progFormatPRINT(void *vp) {
         goto err;
     }
     strcpy(s, scanGetKeyword(kwPRINT));
-    /* no trailing spaces: none after a bare PRINT or a final ',' or ';' */
+    // No trailing spaces: none after a bare PRINT or a final ',' or ';'.
     if (pp->numExpressions > 0) {
         strcat(s, " ");
     }
@@ -2222,6 +2276,7 @@ err:
 }
 
 
+/// @brief Returns the source text of a READ statement.
 static char *progFormatREAD(void *vp) {
     readType *rp = (readType *)vp;
     unsigned long int i;
@@ -2268,6 +2323,7 @@ err:
 }
 
 
+/// @brief Returns the source text of a REM statement.
 static char *progFormatREM(void *vp) {
     char *s = malloc(strlen(((remType *)vp)->remark) + 5);
     if (s == NULL) {
@@ -2280,12 +2336,13 @@ static char *progFormatREM(void *vp) {
 }
 
 
+/// @brief Returns the source text of a RESTORE statement.
 static char *progFormatRESTORE(void *vp) {
     restoreType *rt = (restoreType *)vp;
     char *t = NULL;
     char *s = NULL;
     if (rt->targetLine == NULL) {
-        /* plain RESTORE: returning NULL here made LIST and SAVE drop it */
+        // Plain RESTORE: returning NULL here made LIST and SAVE drop it.
         return(strdup(scanGetKeyword(kwRESTORE)));
     }
     if ((t = evalCode(rt->targetLine)) == NULL) {
@@ -2312,6 +2369,7 @@ err:
 }
 
 
+/// @brief Returns the source text of a SAVE statement.
 static char *progFormatSAVE(void *vp) {
     saveType *st = (saveType *)vp;
     char *s = NULL;
@@ -2339,6 +2397,7 @@ err:
 }
 
 
+/// @brief Returns the source text of a TRAP statement.
 static char *progFormatTRAP(void *vp) {
     trapType *tt = (trapType *)vp;
     char *t = NULL;
@@ -2369,6 +2428,7 @@ err:
 }
 
 
+/// @brief Frees an assignment without LET.
 static void progFreeAssignment(void *vp) {
     assignmentType *ap = (assignmentType *)vp;
     if (ap != NULL) {
@@ -2380,6 +2440,7 @@ static void progFreeAssignment(void *vp) {
 }
 
 
+/// @brief Frees a DATA statement.
 static void progFreeDATA(void *vp) {
     dataType *dp = (dataType *)vp;
     if (dp != NULL) {
@@ -2391,6 +2452,7 @@ static void progFreeDATA(void *vp) {
 }
 
 
+/// @brief Frees a statement that holds nothing but itself.
 static void progFreeDefault(void *vp) {
     if (vp != NULL) {
         free(vp);
@@ -2398,13 +2460,14 @@ static void progFreeDefault(void *vp) {
 }
 
 
+/// @brief Frees a DIM statement.
 static void progFreeDIM(void *vp) {
     dimType *dp = (dimType *)vp;
     unsigned long int i;
     if (dp != NULL) {
         if (dp->dimList != NULL) {
             for (i = 0; i < dp->numElements; i++) {
-                /* each entry is an identifier with its size expressions in l and r */
+                // Each entry is an identifier with its size expressions in l and r.
                 progDeleteExpression(dp->dimList[i]);
             }
             free(dp->dimList);
@@ -2414,6 +2477,7 @@ static void progFreeDIM(void *vp) {
 }
 
 
+/// @brief Frees a FOR statement.
 static void progFreeFOR(void *vp) {
     forType *fp = (forType *)vp;
     if (fp != NULL) {
@@ -2431,6 +2495,7 @@ static void progFreeFOR(void *vp) {
 }
 
 
+/// @brief Frees a GOSUB statement.
 static void progFreeGOSUB(void *vp) {
     gosubType *gp = (gosubType *)vp;
     if (gp != NULL) {
@@ -2442,6 +2507,7 @@ static void progFreeGOSUB(void *vp) {
 }
 
 
+/// @brief Frees a GOTO statement.
 static void progFreeGOTO(void *vp) {
     gotoType *gp = (gotoType *)vp;
     if (gp != NULL) {
@@ -2453,6 +2519,7 @@ static void progFreeGOTO(void *vp) {
 }
 
 
+/// @brief Frees an IF statement and the statements after its THEN.
 static void progFreeIF(void *vp) {
     ifType *ip = (ifType *)vp;
     if (ip != NULL) {
@@ -2469,6 +2536,7 @@ static void progFreeIF(void *vp) {
 }
 
 
+/// @brief Frees an INPUT statement.
 static void progFreeINPUT(void *vp) {
     inputType *ip = (inputType *)vp;
     unsigned long int i;
@@ -2486,6 +2554,7 @@ static void progFreeINPUT(void *vp) {
 }
 
 
+/// @brief Frees a LET statement.
 static void progFreeLET(void *vp) {
     letType *lp = (letType *)vp;
     if (lp != NULL) {
@@ -2497,6 +2566,7 @@ static void progFreeLET(void *vp) {
 }
 
 
+/// @brief Frees a LIST statement.
 static void progFreeLIST(void *vp) {
     listType *lp = (listType *)vp;
     if (lp != NULL) {
@@ -2511,6 +2581,7 @@ static void progFreeLIST(void *vp) {
 }
 
 
+/// @brief Frees a LOAD statement.
 static void progFreeLOAD(void *vp) {
     loadType *lp = (loadType *)vp;
     if (lp != NULL) {
@@ -2522,6 +2593,7 @@ static void progFreeLOAD(void *vp) {
 }
 
 
+/// @brief Frees a NEXT statement.
 static void progFreeNEXT(void *vp) {
     nextType *np = (nextType *)vp;
     if (np != NULL) {
@@ -2533,6 +2605,7 @@ static void progFreeNEXT(void *vp) {
 }
 
 
+/// @brief Frees an ON statement.
 static void progFreeON(void *vp) {
     onType *op = (onType *)vp;
     unsigned long int i;
@@ -2556,6 +2629,7 @@ static void progFreeON(void *vp) {
 }
 
 
+/// @brief Frees a PRINT statement.
 static void progFreePRINT(void *vp) {
     printType *pp = (printType *)vp;
     unsigned long int i;
@@ -2573,13 +2647,14 @@ static void progFreePRINT(void *vp) {
 }
 
 
+/// @brief Frees a READ statement.
 static void progFreeREAD(void *vp) {
     readType *rp = (readType *)vp;
     unsigned long int i;
     if (rp != NULL) {
         if (rp->varList != NULL) {
             for (i = 0; i < rp->numVars; i++) {
-                /* each entry is an identifier with its subscripts in l and r */
+                // Each entry is an identifier with its subscripts in l and r.
                 progDeleteExpression(rp->varList[i]);
             }
             free(rp->varList);
@@ -2589,6 +2664,7 @@ static void progFreeREAD(void *vp) {
 }
 
 
+/// @brief Frees a REM statement.
 static void progFreeREM(void *vp) {
     remType *rp = (remType *)vp;
     if (rp != NULL) {
@@ -2600,6 +2676,7 @@ static void progFreeREM(void *vp) {
 }
 
 
+/// @brief Frees a RESTORE statement.
 static void progFreeRESTORE(void *vp) {
     restoreType *rp = (restoreType *)vp;
     if (rp != NULL) {
@@ -2611,6 +2688,7 @@ static void progFreeRESTORE(void *vp) {
 }
 
 
+/// @brief Frees a SAVE statement.
 static void progFreeSAVE(void *vp) {
     saveType *sp = (saveType *)vp;
     if (sp != NULL) {
@@ -2622,6 +2700,7 @@ static void progFreeSAVE(void *vp) {
 }
 
 
+/// @brief Frees a TRAP statement.
 static void progFreeTRAP(void *vp) {
     trapType *tp = (trapType *)vp;
     if (tp != NULL) {
@@ -2653,7 +2732,7 @@ progLineType *progInsertLine(long int l) {
         prog = p;
         return(p);
     } else if (prog->lineNum > l) {
-        /* new first line */
+        // A new first line.
         p->next = prog;
         prog = p;
         return(p);
@@ -2685,6 +2764,8 @@ progLineType *progInsertLine(long int l) {
 }
 
 
+/// @brief Writes the program's lines from start to end (-1: no limit) to file
+/// descriptor fh; returns 0, or 1 if memory runs out.
 static int progList(int fh, long int start, long int end) {
     progLineType *p = prog;
     instructionType *i;
@@ -2695,7 +2776,7 @@ static int progList(int fh, long int start, long int end) {
     unsigned long int eLen = 0;
     unsigned long int sLen = 0;
     int rc = 1;
-    /* this writes to fh directly, so send anything printf has buffered first */
+    // This writes to fh directly, so send anything printf has buffered first.
     fflush(stdout);
     if ((s = malloc(len)) == NULL) {
         utilErrorN(ERR_MEMORY, "%s", memErr);
@@ -2712,7 +2793,7 @@ static int progList(int fh, long int start, long int end) {
             if ((e = i->formatFunc(i)) != NULL) {
                 eLen = strlen(e);
                 sLen = strlen(s);
-                /* room for this text, " : " and the terminator */
+                // Room for this text, " : " and the terminator.
                 while (sLen + eLen + 4 > len) {
                     len <<= 1;
                     if ((ss = realloc(s, len)) == NULL) {
@@ -2747,6 +2828,7 @@ err:
 }
 
 
+/// @brief Deletes the program and every variable, for NEW and LOAD; returns 0.
 int progNew(void) {
     progLineType *p = prog;
     progLineType *t;
@@ -2760,7 +2842,7 @@ int progNew(void) {
     controlTop = -1;
     progStop = NULL;
     progTrap = -1;
-    /* "NEW clears BASIC's internal symbol table" (Manual, NEW); DEG stays until RAD */
+    // "NEW clears BASIC's internal symbol table" (Manual, NEW); DEG stays until RAD.
     varClearAll();
     return(0);
 }
@@ -2774,9 +2856,8 @@ void progRemoveLine(long int l) {
 }
 
 
-/*
- * Bounded write into eval's result buffer (maxStringLen + 1 bytes).
- */
+/// @brief Like sprintf into eval's result buffer, bounded to its
+/// maxStringLen + 1 bytes.
 static void setResult(char *r, const char *fmt, ...) {
     va_list vl;
     va_start(vl, fmt);
@@ -2785,11 +2866,9 @@ static void setResult(char *r, const char *fmt, ...) {
 }
 
 
-/*
- * Store number d as eval's result. A result that isn't a number is a value
- * error (3); one of 1E98 or more, or below 1E-99, is error 11, as on the Atari
- * (Manual, Appendix B).
- */
+/// @brief Stores number d as eval's result; returns 0, or 1 after an error.
+/// @details A result that isn't a number is a value error (3); one of 1E98 or
+/// more, or below 1E-99, is error 11, as on the Atari (Manual, Appendix B).
 static int numberResult(char *r, double d) {
     if (isnan(d)) {
         utilErrorN(ERR_VALUE, "value error");
@@ -2808,20 +2887,22 @@ static int numberResult(char *r, double d) {
 }
 
 
-/* write a number into eval's result buffer, bailing out of eval if it's out of range */
+// Writes a number into eval's result buffer, bailing out of eval if it's out of range.
 #define SET_NUMBER(r, d) do { if (numberResult((r), (d))) { goto err; } } while (0)
 
 
-/* evaluate a sub-expression, bailing out of eval if it fails */
+// Evaluates a sub-expression, bailing out of eval if it fails.
 #define EVAL_ARG(dst, e) do { if (((dst) = eval(e)) == NULL) { goto err; } } while (0)
 
-/*
- * Make string s itself eval's result, instead of copying it into the
- * fixed-size buffer, so strings can be as long as their DIM size.
- */
+// Makes string s itself eval's result, instead of copying it into the
+// fixed-size buffer, so strings can be as long as their DIM size.
 #define TAKE_RESULT(s) do { free(r); r = (s); (s) = NULL; } while (0)
 
 
+/// @brief Evaluates an expression; returns its value as a newly allocated
+/// string, or NULL after an error.
+/// @details Numbers are formatted by formatNumber(); comparisons and logical
+/// operators give "1" or "0".
 static char *eval(symbolType *expr) {
     char *r = NULL;
     char *left = NULL;
@@ -2850,7 +2931,7 @@ static char *eval(symbolType *expr) {
             SET_NUMBER(r, strtod(expr->value, NULL));
             break;
         case kwIdentifier:
-            /* subscripts index an array, or select a substring of a string */
+            // Subscripts index an array, or select a substring of a string.
             if ((right = progGetVariable(expr)) == NULL) {
                 goto err;
             }
@@ -2896,7 +2977,7 @@ static char *eval(symbolType *expr) {
         case kwLogicalGTE:
             EVAL_ARG(left, expr->l);
             EVAL_ARG(right, expr->r);
-            /* the parser marks comparisons of strings with a value of "$" */
+            // The parser marks comparisons of strings with a value of "$".
             if (expr->value != NULL && expr->value[0] == '$') {
                 cmp = strcmp(left, right);
             } else {
@@ -2996,7 +3077,7 @@ static char *eval(symbolType *expr) {
                     SET_NUMBER(r, exp(o1));
                     break;
                 case kwINT:
-                    /* "the greatest integer less than or equal to": INT(-14.7) is -15 */
+                    // "The greatest integer less than or equal to": INT(-14.7) is -15.
                     SET_NUMBER(r, floor(o1));
                     break;
                 case kwLEN:
@@ -3010,10 +3091,8 @@ static char *eval(symbolType *expr) {
                     SET_NUMBER(r, log(o1));
                     break;
                 case kwPEEK:
-                    /*
-                     * Only the locations a TRAP handler reads (Manual, TRAP and
-                     * Appendix I): 195 is the error number, 186 and 187 the line.
-                     */
+                    // Only the locations a TRAP handler reads (Manual, TRAP and
+                    // Appendix I): 195 is the error number, 186 and 187 the line.
                     if (o1 == 195) {
                         SET_NUMBER(r, (double)progErrorCode);
                     } else if (o1 == 186) {
@@ -3026,7 +3105,7 @@ static char *eval(symbolType *expr) {
                     }
                     break;
                 case kwRND:
-                    /* [0, 1): RAND_MAX itself must not give 1 */
+                    // [0, 1): RAND_MAX itself must not give 1.
                     SET_NUMBER(r, (double)rand() / ((double)RAND_MAX + 1.0));
                     break;
                 case kwSGN:
@@ -3044,7 +3123,7 @@ static char *eval(symbolType *expr) {
                     break;
                 case kwVAL: {
                     char *end;
-                    /* "not possible to use the VAL function with a string that does not start with a number" */
+                    // "Not possible to use the VAL function with a string that does not start with a number."
                     o1 = strtod(left, &end);
                     if (end == left) {
                         utilErrorN(ERR_BAD_STRING, "VAL of \"%s\", which isn't a number", left);
@@ -3054,7 +3133,7 @@ static char *eval(symbolType *expr) {
                     break;
                 }
                 case kwCHR:
-                    /* rounded like other integer arguments; an out-of-range double to char is undefined */
+                    // Rounded like other integer arguments; an out-of-range double to char is undefined.
                     o1 = floor(o1 + 0.5);
                     if (!(o1 >= 0 && o1 <= 255)) {
                         utilErrorN(ERR_VALUE, "value out of range");
@@ -3063,7 +3142,8 @@ static char *eval(symbolType *expr) {
                     r[0] = (char)(int)o1;
                     r[1] = 0;
                     break;
-                default: /* kwSTR */
+                // kwSTR.
+                default:
                     SET_NUMBER(r, o1);
                     break;
             }
@@ -3095,10 +3175,8 @@ err:
 }
 
 
-/*
- * Rebuild the source text of an expression (for LIST and SAVE). Returns a
- * newly allocated string, or NULL on error.
- */
+/// @brief Rebuilds the source text of an expression, for LIST and SAVE.
+/// @return A newly allocated string, or NULL on error.
 static char *evalCode(symbolType *exp) {
     char *s = NULL;
     char *l = NULL;
@@ -3226,6 +3304,8 @@ static char *evalCode(symbolType *exp) {
 }
 
 
+/// @brief Returns the source text of a list of statements, joined with " : ",
+/// newly allocated, or NULL if memory runs out.
 static char *formatLine(instructionType *i) {
     char *e = NULL;
     char *s = NULL;
@@ -3242,7 +3322,7 @@ static char *formatLine(instructionType *i) {
         if ((e = i->formatFunc(i)) != NULL) {
             eLen = strlen(e);
             sLen = strlen(s);
-            /* room for this text, " : " and the terminator */
+            // Room for this text, " : " and the terminator.
             while (sLen + eLen + 4 > len) {
                 len <<= 1;
                 if ((ss = realloc(s, len)) == NULL) {

@@ -1,5 +1,10 @@
-/*
- * var.c
+/**
+ * @file var.c
+ * @author Warren Mann (warren@nonvol.io)
+ * @brief Variables and the DATA list.
+ * @version 0.0.1
+ * @date 2017-03-15
+ * @copyright Copyright (c) 2026
  */
 
 #include <limits.h>
@@ -11,32 +16,22 @@
 #include "util.h"
 #include "var.h"
 
-
-/*
- * LOCAL CONSTANTS
- */
-
-/* the largest DIM value (array subscript or string length), as on the Atari */
+// The largest DIM value (array subscript or string length), as on the Atari.
 #define MAX_DIM 32767L
 
-/* Atari error numbers (Reference Manual, Appendix B) */
+// Atari error numbers (Reference Manual, Appendix B).
 #define ERR_MEMORY 2
 #define ERR_DIM 9
 
-
-/*
- * LOCAL DATA TYPES
- */
-
-/*
- * A variable. kind says what it is:
- *  - SCALAR: a numeric variable used without a subscript; one value.
- *  - ARRAY: DIM A(dim1-1[,dim2-1]); dim1 x dim2 values, subscripts from 0.
- *  - STRING: DIM A$(maxLen); one value of at most maxLen characters.
- * Values that were never set are NULL and read as "0" (or "" for a string).
- */
+/// @brief What a variable is.
+/// @details SCALAR: a numeric variable used without a subscript; one value.
+/// ARRAY: DIM A(dim1-1[,dim2-1]); dim1 x dim2 values, subscripts from 0.
+/// STRING: DIM A$(maxLen); one value of at most maxLen characters.
 typedef enum { SCALAR, ARRAY, STRING } variableKind;
 
+/// @brief A variable.
+/// @details value holds dim1 x dim2 values, stored after the struct. Values
+/// that were never set are NULL and read as "0" (or "" for a string).
 typedef struct variableType {
     struct variableType *next;
     variableKind kind;
@@ -47,25 +42,19 @@ typedef struct variableType {
     char **value;
 } variableType;
 
+/// @brief A DATA item, with the line of its DATA statement (for RESTORE).
 typedef struct dataType {
     struct dataType *next;
     long int lineNum;
     char *value;
 } dataType;
 
-
-/*
- * LOCAL DATA
- */
-
+/// @brief Every variable.
 static variableType *varList = NULL;
+/// @brief Every DATA item, in line order.
 static dataType *dataList = NULL;
+/// @brief The DATA item the next READ takes.
 static dataType *dataPtr = NULL;
-
-
-/*
- * LOCAL FUNCTIONS
- */
 
 static variableType *varCreate(const char *name, variableKind kind, long dim1, long dim2, long maxLen);
 static variableType *varFind(const char *name);
@@ -78,7 +67,7 @@ int varAppendData(char **list, long int lineNum) {
     char **p = list;
     dataType *dl = dataList;
     dataType *dt = NULL;
-    /* skip lines whose data is already in the list (checking every node, including the last) */
+    // Skip lines whose data is already in the list (checking every node, including the last).
     if (dl) {
         while (1) {
             if (dl->lineNum == lineNum) {
@@ -140,7 +129,8 @@ void varClearVariables(void) {
 }
 
 
-/* a new variable with all values unset, added to the list; NULL after an error */
+/// @brief Returns a new variable with all values unset, added to the list,
+/// or NULL after an error.
 static variableType *varCreate(const char *name, variableKind kind, long dim1, long dim2, long maxLen) {
     variableType *var;
     size_t bytes = sizeof(variableType) + sizeof(char *) * (size_t)(dim1 * dim2);
@@ -172,7 +162,7 @@ int varDim(const char *name, long dim1, long dim2) {
         return(1);
     }
     if (strchr(name, '$') != NULL) {
-        /* DIM A$(n) is one string of up to n characters */
+        // DIM A$(n) is one string of up to n characters.
         if (dim2 != -1) {
             utilErrorN(ERR_DIM, "string %s has only one dimension, its length", name);
             return(1);
@@ -183,13 +173,13 @@ int varDim(const char *name, long dim1, long dim2) {
         }
         return(varCreate(name, STRING, 1, 1, dim1) == NULL);
     }
-    /* DIM A(n) has subscripts 0 to n: n + 1 elements */
+    // DIM A(n) has subscripts 0 to n: n + 1 elements.
     if (dim1 < 0 || dim1 > MAX_DIM || dim2 < -1 || dim2 > MAX_DIM) {
         utilErrorN(ERR_DIM, "DIM size must be 0 to %ld", MAX_DIM);
         return(1);
     }
     if (var != NULL) {
-        /* a scalar of the same name is replaced by the array */
+        // A scalar of the same name is replaced by the array.
         variableType **pp = &varList;
         while (*pp != var) {
             pp = &(*pp)->next;
@@ -197,16 +187,18 @@ int varDim(const char *name, long dim1, long dim2) {
         *pp = var->next;
         varFree(var);
     }
-    /* (32767 + 1)^2 pointers fits in size_t on any machine this builds on */
+    // (32767 + 1)^2 pointers fits in size_t on any machine this builds on.
     return(varCreate(name, ARRAY, dim1 + 1, dim2 == -1 ? 1 : dim2 + 1, 0) == NULL);
 }
 
 
+/// @brief Frees every variable and the DATA list, at exit.
 static void varExit(void) {
     varClearAll();
 }
 
 
+/// @brief Returns the variable called name (case doesn't matter), or NULL.
 static variableType *varFind(const char *name) {
     variableType *var;
     for (var = varList; var != NULL; var = var->next) {
@@ -218,7 +210,7 @@ static variableType *varFind(const char *name) {
 }
 
 
-/* free a variable, its name and its values */
+/// @brief Frees a variable, its name and its values.
 static void varFree(variableType *var) {
     long i;
     for (i = 0L; i < var->dim1 * var->dim2; i++) {
@@ -233,7 +225,7 @@ char *varGetValue(const char *name, long i, long j) {
     char **slot;
     char *s;
     if (varFind(name) == NULL && strchr(name, '$') == NULL && i == -1) {
-        /* a numeric scalar that was never set */
+        // A numeric scalar that was never set.
         s = strdup("0");
     } else if ((slot = varSlot(name, i, j, 0)) == NULL) {
         return(NULL);
@@ -271,7 +263,7 @@ int varRestoreData(long int lineNum) {
         dataPtr = dataList;
         return(0);
     }
-    /* the first data item on or after the given line (data is kept in line order) */
+    // The first data item on or after the given line (data is kept in line order).
     dataType *d = dataList;
     while (d != NULL && d->lineNum < lineNum) {
         d = d->next;
@@ -294,7 +286,7 @@ int varSetValue(const char *name, const char *value, long i, long j) {
     if ((slot = varSlot(name, i, j, 1)) == NULL) {
         return(1);
     }
-    /* a string is cut to its DIM size */
+    // A string is cut to its DIM size.
     var = varFind(name);
     s = var->kind == STRING ? strndup(value, (size_t)var->maxLen) : strdup(value);
     if (s == NULL) {
@@ -307,11 +299,9 @@ int varSetValue(const char *name, const char *value, long i, long j) {
 }
 
 
-/*
- * Where the value of name, or of name(i,j), is stored. With create, an
- * unknown numeric scalar is created. Reports an error and returns NULL if the
- * reference isn't valid for the variable.
- */
+/// @brief Returns where the value of name, or of name(i,j), is stored.
+/// @details With create, an unknown numeric scalar is created. Reports an
+/// error and returns NULL if the reference isn't valid for the variable.
 static char **varSlot(const char *name, long i, long j, int create) {
     variableType *var = varFind(name);
     if (strchr(name, '$') != NULL) {
@@ -322,7 +312,7 @@ static char **varSlot(const char *name, long i, long j, int create) {
         return(&var->value[0]);
     }
     if (i == -1) {
-        /* no subscript: a scalar */
+        // No subscript: a scalar.
         if (var == NULL) {
             if (!create || (var = varCreate(name, SCALAR, 1, 1, 0)) == NULL) {
                 return(NULL);
@@ -337,7 +327,7 @@ static char **varSlot(const char *name, long i, long j, int create) {
         utilErrorN(ERR_DIM, "%s is not dimensioned", name);
         return(NULL);
     }
-    /* A(i) on a two-dimensional array means A(i,0) */
+    // A(i) on a two-dimensional array means A(i,0).
     if (j == -1) {
         j = 0;
     }

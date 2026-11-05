@@ -1,5 +1,10 @@
-/*
- * scan.c
+/**
+ * @file scan.c
+ * @author Warren Mann (warren@nonvol.io)
+ * @brief The scanner: splits input into tokens.
+ * @version 0.0.1
+ * @date 2017-03-15
+ * @copyright Copyright (c) 2026
  */
 
 #include <ctype.h>
@@ -12,20 +17,12 @@
 #include "scan.h"
 #include "util.h"
 
-
-/*
- * LOCAL CONSTANTS
- */
-
-/* "Variable names may be up to 120 characters long" (Manual, section 1) */
+// "Variable names may be up to 120 characters long" (Manual, section 1).
 #define MAX_NAME_LEN 120
 
-
-/*
- * LOCAL DATA
- */
-
+/// @brief The keywords as a balanced binary tree over keywordTable, for lookup().
 static symbolType *keywordTree = NULL;
+/// @brief Every keyword and its name; scanInit() sorts it by name.
 static symbolType keywordTable[] = {
     {NULL, NULL, "and", kwAND},
     {NULL, NULL, "or", kwOR},
@@ -83,19 +80,19 @@ static symbolType keywordTable[] = {
     {NULL, NULL, "err$", kwERR},
     {NULL, NULL, "peek", kwPEEK}
 };
+/// @brief The current token; its value buffer holds maxStringLen + 1 characters.
 static symbolType *scanCurrent = NULL;
+/// @brief The keywordTable entry for each keyword, for scanGetKeyword().
 static symbolType *idToKeywordTable[kwNumKeywords];
-/* where the current token starts in its input line, for error messages */
+/// @brief Where the current token starts in its input line, for error messages.
 static long tokenColumn = -1;
 
-/*
- * Atari BASIC's statement table, in its order. An abbreviation (PR. for
- * PRINT) means the first statement here that starts with it, which gives
- * exactly the abbreviations in the BNF: R. is REM, REA. READ, CL. CLOSE, E.
- * ENTER. Hardware and I/O statements this interpreter doesn't have are kept
- * (id -1) so their abbreviations aren't taken by something else. CLS isn't an
- * Atari statement, so it goes last.
- */
+/// @brief Atari BASIC's statement table, in its order.
+/// @details An abbreviation (PR. for PRINT) means the first statement here
+/// that starts with it, which gives exactly the abbreviations in the BNF: R.
+/// is REM, REA. READ, CL. CLOSE, E. ENTER. Hardware and I/O statements this
+/// interpreter doesn't have are kept (id -1) so their abbreviations aren't
+/// taken by something else. CLS isn't an Atari statement, so it goes last.
 static const struct {
     const char *name;
     int id;
@@ -116,29 +113,30 @@ static const struct {
     {"cload", -1}, {"cls", kwCLS}
 };
 
-
-/*
- * LOCAL FUNCTIONS
- */
-
 static int cmpKeywords(const void *a, const void *b);
+static char *scanGetLOp(void);
 static char *scanGetName(void);
 static char *scanGetNum(void);
 static char *scanGetOp(void);
 static char *scanGetString(void);
 static symbolType *insertSymbol(symbolType *p, long s, long e);
+static int islop(char c);
 static int isop(char c);
 static int lookup(symbolType *t, char *s);
 static int lookupAbbreviation(const char *s);
 static void scanExit(void);
+static int scanToken(void);
 static void skipWhite(void);
 
 
+/// @brief Orders keywordTable entries by name, for qsort().
 static int cmpKeywords(const void *a, const void *b) {
     return(strcmp(((symbolType *)a)->value, ((symbolType *)b)->value));
 }
 
 
+/// @brief Links p[s..e], which is sorted, into a balanced binary tree and
+/// returns its root.
 static symbolType *insertSymbol(symbolType *p, long s, long e) {
     if (s > e) {
         return(NULL);
@@ -151,16 +149,19 @@ static symbolType *insertSymbol(symbolType *p, long s, long e) {
 }
 
 
+/// @brief Tells whether c is an arithmetic operator.
 static int isop(char c) {
     return(c == '+' || c == '-' || c == '*' || c == '/' || c == '^');
 }
 
 
+/// @brief Tells whether c starts a comparison operator.
 static int islop(char c) {
     return(c == '<' || c == '>' || c == '=');
 }
 
 
+/// @brief Returns the keyword named s (case doesn't matter) in tree t, or -1.
 static int lookup(symbolType *t, char *s) {
     if (s == NULL) {
         return(-1);
@@ -183,11 +184,10 @@ static int lookup(symbolType *t, char *s) {
 }
 
 
-/*
- * The statement keyword that abbreviation s (without its period) stands for.
- * Reports an error and returns -1 if there is none, or if it is an Atari
- * statement this interpreter doesn't have.
- */
+/// @brief Returns the statement keyword that abbreviation s (without its
+/// period) stands for.
+/// @details Reports an error and returns -1 if there is none, or if it is an
+/// Atari statement this interpreter doesn't have.
 static int lookupAbbreviation(const char *s) {
     size_t i;
     size_t len = strlen(s);
@@ -210,7 +210,7 @@ long scanTokenColumn(void) {
 
 
 int scanConsumeEol(void) {
-    /* a new line starts here, so it may report its own error */
+    // A new line starts here, so it may report its own error.
     utilErrorReset();
     ioNext();
     return(scanNext());
@@ -299,6 +299,7 @@ char *scanGetKeyword(keywords k) {
 }
 
 
+/// @brief Reads a comparison operator; returns it newly allocated, or NULL.
 static char *scanGetLOp(void) {
     char *s = malloc(3);
     char *t = s;
@@ -340,6 +341,8 @@ static char *scanGetLOp(void) {
 }
 
 
+/// @brief Reads a name (a keyword or identifier); returns it newly allocated,
+/// or NULL after reporting an error.
 static char *scanGetName(void) {
     char *s = malloc(maxStringLen + 1);
     char *t = s;
@@ -352,7 +355,7 @@ static char *scanGetName(void) {
         free(s);
         return(NULL);
     }
-    /* the buffer holds maxStringLen + 1 bytes, so i reaching -1 means too long */
+    // The buffer holds maxStringLen + 1 bytes, so i reaching -1 means too long.
     while (i >= 0 && (isalnum((unsigned char)ioPeek()) || ioPeek() == '$')) {
         *t++ = ioPeek();
         ioNext();
@@ -369,6 +372,8 @@ static char *scanGetName(void) {
 }
 
 
+/// @brief Reads a number (digits, a decimal point and an exponent); returns it
+/// newly allocated, or NULL after reporting an error.
 static char *scanGetNum(void) {
     char *s = malloc(maxStringLen + 1);
     char *t = s;
@@ -388,7 +393,7 @@ static char *scanGetNum(void) {
         ioNext();
         i--;
     }
-    /* optional exponent (E, an optional sign, digits), only after a digit, so ". END" stays a REM */
+    // An optional exponent (E, an optional sign, digits), only after a digit, so ". END" stays a REM.
     if (digits > 0 && i >= 0 && (ioPeek() == 'e' || ioPeek() == 'E')) {
         *t++ = ioPeek();
         ioNext();
@@ -415,6 +420,8 @@ static char *scanGetNum(void) {
 }
 
 
+/// @brief Reads an arithmetic operator; returns it newly allocated, or NULL
+/// after reporting an error.
 static char *scanGetOp(void) {
     char *s = malloc(2);
     char *t = s;
@@ -426,7 +433,7 @@ static char *scanGetOp(void) {
         free(s);
         return(NULL);
     }
-    /* one character only, so 2*-3 is '*' then '-' */
+    // One character only, so 2*-3 is '*' then '-'.
     *t++ = ioPeek();
     ioNext();
     *t = 0;
@@ -435,6 +442,8 @@ static char *scanGetOp(void) {
 }
 
 
+/// @brief Reads a string literal, without its quotes; returns it newly
+/// allocated, or NULL after reporting an error.
 static char *scanGetString(void) {
     char *s = malloc(maxStringLen + 1);
     char *t = s;
@@ -459,7 +468,7 @@ static char *scanGetString(void) {
         free(s);
         return(NULL);
     }
-    /* "the closing quotation can be omitted if it is the last character on a logical line" */
+    // "The closing quotation can be omitted if it is the last character on a logical line."
     if (ioPeek() == '\n' || ioPeek() == IO_EOF) {
         *t = 0;
         return(s);
@@ -489,6 +498,7 @@ symbolType *scanGetText(void) {
 }
 
 
+/// @brief Frees the current token, at exit.
 static void scanExit(void) {
     if (scanCurrent != NULL) {
         free(scanCurrent);
@@ -545,15 +555,6 @@ symbolType *scanNewSymbol(keywords k, char *v) {
 }
 
 
-static int scanToken(void);
-
-
-/*
- * Read the next token into scanCurrent. If no valid token can be read, the
- * token is kwUnknown (value: the offending character, if any) rather than
- * whatever was there before, so the parser reports an error instead of
- * reusing a stale token.
- */
 int scanNext(void) {
     if (scanToken()) {
         scanCurrent->id = kwUnknown;
@@ -572,6 +573,8 @@ void scanSkipLine(void) {
 }
 
 
+/// @brief Reads the next token into scanCurrent; returns 0, or 1 if no token
+/// can be read (with the offending character, if any, as the value).
 static int scanToken(void) {
     char *s = NULL;
     int i;
@@ -618,7 +621,7 @@ static int scanToken(void) {
         skipWhite();
         return(0);
     } else if (ioPeek() == '?') {
-        /* ? is short for PRINT */
+        // ? is short for PRINT.
         scanCurrent->id = kwPRINT;
         ioNext();
         skipWhite();
@@ -626,7 +629,7 @@ static int scanToken(void) {
     } else if (isalpha((unsigned char)ioPeek())) {
         if ((s = scanGetName()) != NULL) {
             if (ioPeek() == '.') {
-                /* an abbreviated statement, e.g. PR. for PRINT */
+                // An abbreviated statement, e.g. PR. for PRINT.
                 ioNext();
                 skipWhite();
                 i = lookupAbbreviation(s);
@@ -658,7 +661,7 @@ static int scanToken(void) {
     } else if (isdigit((unsigned char)ioPeek()) || ioPeek() == '.') {
         if ((s = scanGetNum()) != NULL) {
             if (!strcmp(s, ".")) {
-                /* a lone period isn't a number; at the start of a statement it means REM */
+                // A lone period isn't a number; at the start of a statement it means REM.
                 scanCurrent->id = kwREM;
                 free(s);
                 return(0);
@@ -715,7 +718,7 @@ static int scanToken(void) {
         }
         return(1);
     }
-    /* not the start of any token: leave it for the error message */
+    // Not the start of any token: leave it for the error message.
     scanCurrent->value[0] = ioPeek();
     scanCurrent->value[1] = 0;
     return(1);
@@ -727,6 +730,7 @@ symbolType *scanPeek(void) {
 }
 
 
+/// @brief Skips spaces and tabs, but not the end of the line.
 static void skipWhite(void) {
     while (isspace((unsigned char)ioPeek()) && ioPeek() != '\n') {
         ioNext();
