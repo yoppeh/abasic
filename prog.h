@@ -11,6 +11,10 @@
 #include "scan.h"
 
 
+/* Atari BASIC line numbers are 0 to 32767 */
+#define MAX_LINE_NUMBER 32767L
+
+
 /*
  * DATA TYPES
  */
@@ -20,19 +24,19 @@ typedef char * (instructionFormatFunc)(void *);
 typedef void (instructionFreeFunc)(void *);
 
 typedef struct instructionType {
-	struct instructionType *next;
-	keywords keyword;
-	instructionExecuteFunc *executeFunc;
-	instructionFormatFunc *formatFunc;
-	instructionFreeFunc *freeFunc;
+    struct instructionType *next;
+    keywords keyword;
+    instructionExecuteFunc *executeFunc;
+    instructionFormatFunc *formatFunc;
+    instructionFreeFunc *freeFunc;
 } instructionType;
 
 typedef struct progLineType {
-	struct progLineType *next;
-	instructionType *firstInstruction;
-	instructionType *lastInstruction;
-	instructionType *currentInstruction;
-	long int lineNum;
+    struct progLineType *next;
+    instructionType *firstInstruction;
+    instructionType *lastInstruction;
+    instructionType *currentInstruction;
+    long int lineNum;
 } progLineType;
 
 
@@ -52,7 +56,10 @@ extern void progExecuteLine(progLineType *p);
 
 extern int progInit(void);
 
-extern progLineType *progInsertLine(int l);
+extern progLineType *progInsertLine(long int l);
+
+/* delete line l, if it exists */
+extern void progRemoveLine(long int l);
 
 
 #endif /* PROG_H */

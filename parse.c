@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "io.h"
 #include "prog.h"
@@ -19,6 +20,8 @@
  */
 
 static symbolType *term1(void);
+static symbolType *notTerm(void);
+static symbolType *leftChain(symbolType *(*operand)(void), const keywords *ops, size_t numOps);
 static symbolType *term2(void);
 static symbolType *term3(void);
 static symbolType *term4(void);
@@ -27,6 +30,7 @@ static symbolType *factor2(void);
 static symbolType *factor3(void);
 static symbolType *aexp(void);
 static symbolType *sexp(void);
+static symbolType *stringComparison(symbolType *left);
 
 static symbolType *parseAssignment(void);
 static int insAssignment(progLineType *p);
@@ -60,1407 +64,1388 @@ static int insTRAP(progLineType *pl);
 static int statement(progLineType *pl);
 static int compoundStatement(progLineType *pl);
 static void deferredStatement(void);
+static void showSyntaxError(long column);
+static int insDEG(progLineType *pl);
+static int insRAD(progLineType *pl);
+static int endOfStatement(symbolType *s);
 static void immediateStatement(void);
 
 
+/*
+ * <operand> [<op> <operand>]...: a left-associative chain of binary operator
+ * nodes, which is what the BNF's left-recursive rules (<aexp> ::= <aexp> OR
+ * <term1>, ...) describe. ops lists the operators accepted at this level.
+ */
+static symbolType *leftChain(symbolType *(*operand)(void), const keywords *ops, size_t numOps) {
+    symbolType *a;
+    symbolType *p;
+    symbolType *s;
+    size_t i;
+    if ((p = operand()) == NULL) {
+        return(NULL);
+    }
+    while (1) {
+        s = scanPeek();
+        for (i = 0; i < numOps && s->id != ops[i]; i++) {
+        }
+        if (i == numOps) {
+            return(p);
+        }
+        if ((a = scanNewSymbol(s->id, NULL)) == NULL) {
+            break;
+        }
+        a->l = p;
+        p = a;
+        scanNext();
+        if ((p->r = operand()) == NULL) {
+            break;
+        }
+    }
+    progDeleteExpression(p);
+    return(NULL);
+}
+
+
+/* <aexp> ::= <term1> | <aexp> OR <term1> */
 static symbolType *aexp(void) {
-	symbolType *a = NULL;
-	symbolType *p = NULL;
-	symbolType *s = NULL;
-	if ((p = term1()) == NULL) {
-		goto err;
-	}
-	s = scanPeek();
-	if (s->id == kwOR) {
-		if ((a = scanNewSymbol(kwOR, NULL)) == NULL) {
-			goto err;
-		}
-		a->l = p;
-		scanNext();
-		if ((a->r = aexp()) == NULL) {
-			goto err;
-		}
-		return(a);
-	}
-	return(p);
-err:
-	if (a != NULL) {
-		progDeleteExpression(a);
-	} else if (p != NULL) {
-		progDeleteExpression(p);
-	}
-	return(NULL);
+    static const keywords ops[] = { kwOR };
+    return(leftChain(term1, ops, 1));
 }
 
 
+/*
+ * NOT <term2>. The BNF has NOT only at the start of a <term1>; it is also
+ * accepted after AND (A AND NOT B) and repeated (NOT NOT A).
+ */
+static symbolType *notTerm(void) {
+    symbolType *p;
+    if (scanPeek()->id != kwNOT) {
+        return(term2());
+    }
+    if ((p = scanNewSymbol(kwNOT, NULL)) == NULL) {
+        return(NULL);
+    }
+    scanNext();
+    if ((p->r = notTerm()) == NULL) {
+        progDeleteExpression(p);
+        return(NULL);
+    }
+    return(p);
+}
+
+
+/* <term1> ::= <term2> | <term1> AND <term2> | NOT <term2> */
 static symbolType *term1(void) {
-	symbolType *a = NULL;
-	symbolType *p = NULL;
-	symbolType *s;
-	s = scanPeek();
-	if (s->id == kwNOT) {
-		if ((p = scanNewSymbol(kwNOT, NULL)) == NULL) {
-			goto err;
-		}
-		scanNext();
-		if ((p->r = term2()) == NULL) {
-			goto err;
-		}
-		return(p);
-	} else {
-		if ((p = term2()) == NULL) {
-			goto err;
-		}
-		s = scanPeek();
-		if (s->id == kwAND) {
-			if ((a = scanNewSymbol(kwAND, NULL)) == NULL) {
-				goto err;
-			}
-			scanNext();
-			a->l = p;
-			if ((a->r = term1()) == NULL) {
-				goto err;
-			}
-			return(a);
-		}
-		return(p);
-	}
-err:
-	if (a != NULL) {
-		progDeleteExpression(a);
-	} else if (p != NULL) {
-		progDeleteExpression(p);
-	}
-	return(NULL);
+    static const keywords ops[] = { kwAND };
+    return(leftChain(notTerm, ops, 1));
 }
 
 
+/* <term2> ::= <term3> | <term2> <lop> <term3> */
 static symbolType *term2(void) {
-	symbolType *a = NULL;
-	symbolType *p = NULL;
-	symbolType *s;
-	if ((p = term3()) == NULL) {
-		goto err;
-	}
-	s = scanPeek();
-	if (s->id == kwLogicalLT || s->id == kwLogicalLTE || s->id == kwLogicalEQ || s->id == kwLogicalNE || s->id == kwLogicalGT || s->id == kwLogicalGTE) {
-		if ((a = scanNewSymbol(s->id, NULL)) == NULL) {
-			goto err;
-		}
-		scanNext();
-		a->l = p;
-		if ((a->r = term2()) == NULL) {
-			goto err;
-		}
-		return(a);
-	}
-	return(p);
-err:
-	if (a != NULL) {
-		progDeleteExpression(a);
-	} else if (p != NULL) {
-		progDeleteExpression(p);
-	}
-	return(NULL);
+    static const keywords ops[] = { kwLogicalLT, kwLogicalLTE, kwLogicalEQ, kwLogicalNE, kwLogicalGT, kwLogicalGTE };
+    return(leftChain(term3, ops, sizeof(ops) / sizeof(ops[0])));
 }
 
 
+/*
+ * term3 and term4 loop rather than recurse on the right, so the operators are
+ * left-associative: 10-3-2 is (10-3)-2 and 8/4/2 is (8/4)/2.
+ */
 static symbolType *term3(void) {
-	symbolType *a = NULL;
-	symbolType *p = NULL;
-	symbolType *s;
-	if ((p = term4()) == NULL) {
-		goto err;
-	}
-	s = scanPeek();
-	if (s->id == kwOpAdd || s->id == kwOpSub) {
-		if ((a = scanNewSymbol(s->id, NULL)) == NULL) {
-			goto err;
-		}
-		a->l = p;
-		scanNext();
-		if ((a->r = term3()) == NULL) {
-			goto err;
-		}
-		return(a);
-	}
-	return(p);
+    symbolType *a = NULL;
+    symbolType *p = NULL;
+    symbolType *s;
+    if ((p = term4()) == NULL) {
+        goto err;
+    }
+    s = scanPeek();
+    while (s->id == kwOpAdd || s->id == kwOpSub) {
+        if ((a = scanNewSymbol(s->id, NULL)) == NULL) {
+            goto err;
+        }
+        a->l = p;
+        p = a;
+        scanNext();
+        if ((p->r = term4()) == NULL) {
+            goto err;
+        }
+        s = scanPeek();
+    }
+    return(p);
 err:
-	if (a != NULL) {
-		progDeleteExpression(a);
-	} else if (p != NULL) {
-		progDeleteExpression(p);
-	}
-	return(NULL);
+    if (p != NULL) {
+        progDeleteExpression(p);
+    }
+    return(NULL);
 }
 
 
 static symbolType *term4(void) {
-	symbolType *a = NULL;
-	symbolType *p = NULL;
-	symbolType *s;
-	if ((p = factor1()) == NULL) {
-		goto err;
-	}
-	s = scanPeek();
-	if (s->id == kwOpMul || s->id == kwOpDiv) {
-		if ((a = scanNewSymbol(s->id, NULL)) == NULL) {
-			goto err;
-		}
-		scanNext();
-		a->l = p;
-		if ((a->r = term4()) == NULL) {
-			goto err;
-		}
-		return(a);
-	}
-	return(p);
+    symbolType *a = NULL;
+    symbolType *p = NULL;
+    symbolType *s;
+    if ((p = factor1()) == NULL) {
+        goto err;
+    }
+    s = scanPeek();
+    while (s->id == kwOpMul || s->id == kwOpDiv) {
+        if ((a = scanNewSymbol(s->id, NULL)) == NULL) {
+            goto err;
+        }
+        a->l = p;
+        p = a;
+        scanNext();
+        if ((p->r = factor1()) == NULL) {
+            goto err;
+        }
+        s = scanPeek();
+    }
+    return(p);
 err:
-	if (a != NULL) {
-		progDeleteExpression(a);
-	} else if (p != NULL) {
-		progDeleteExpression(p);
-	}
-	return(NULL);
+    if (p != NULL) {
+        progDeleteExpression(p);
+    }
+    return(NULL);
 }
 
 
+/* <factor1> ::= <factor2> | <factor1> ^ <factor2>, so 2^3^2 is (2^3)^2 = 64 */
 static symbolType *factor1(void) {
-	symbolType *a = NULL;
-	symbolType *p = NULL;
-	symbolType *s;
-	if ((p = factor2()) == NULL) {
-		goto err;
-	}
-	s = scanPeek();
-	if (s->id == kwOpExp) {
-		if ((a = scanNewSymbol(s->id, NULL)) == NULL) {
-			goto err;
-		}
-		scanNext();
-		a->l = p;
-		if ((a->r = factor1()) == NULL) {
-			goto err;
-		}
-		return(a);
-	}
-	return(p);
-err:
-	if (a != NULL) {
-		progDeleteExpression(a);
-	} else if (p != NULL) {
-		progDeleteExpression(p);
-	}
-	return(NULL);
+    static const keywords ops[] = { kwOpExp };
+    return(leftChain(factor2, ops, 1));
 }
 
 
 static symbolType *factor2(void) {
-	symbolType *a = NULL;
-	symbolType *p = NULL;
-	symbolType *s;
-	s = scanPeek();
-	if (s->id == kwOpAdd || s->id == kwOpSub) {
-		scanNext();
-		if ((a = scanNewSymbol(s->id, NULL)) == NULL) {
-			goto err;
-		}
-		a->id = (s->id == kwOpAdd) ? kwSignPlus : kwSignMinus;
-		if ((a->r = factor3()) == NULL) {
-			goto err;
-		}
-		return(a);
-	} else {
-		p = factor3();
-	}
-	return(p);
+    symbolType *a = NULL;
+    symbolType *p = NULL;
+    symbolType *s;
+    s = scanPeek();
+    if (s->id == kwOpAdd || s->id == kwOpSub) {
+        /* s is the scanner's shared token, so read it before scanNext() */
+        keywords sign = (s->id == kwOpAdd) ? kwSignPlus : kwSignMinus;
+        scanNext();
+        if ((a = scanNewSymbol(sign, NULL)) == NULL) {
+            goto err;
+        }
+        if ((a->r = factor3()) == NULL) {
+            goto err;
+        }
+        return(a);
+    } else {
+        p = factor3();
+    }
+    return(p);
 err:
-	if (a != NULL) {
-		progDeleteExpression(a);
-	} else if (p != NULL) {
-		progDeleteExpression(p);
-	}
-	return(NULL);
+    if (a != NULL) {
+        progDeleteExpression(a);
+    } else if (p != NULL) {
+        progDeleteExpression(p);
+    }
+    return(NULL);
 }
 
 
 static symbolType *factor3(void) {
-	symbolType *p = NULL;
-	symbolType *s = scanPeek();
-	switch (s->id) {
-		case kwParenthesesOpen:
-			scanNext();
-			if ((p = scanNewSymbol(kwSubExpression, NULL)) == NULL) {
-				goto err;
-			}
-			p->id = kwSubExpression;
-			if ((p->r = aexp()) == NULL) {
-				goto err;
-			}
-			s = scanPeek();
-			if (s->id != kwParenthesesClose) {
-				utilError("expected closing parentheses");
-				goto err;
-			}
-			scanNext();
-			break;
-		case kwIdentifier:
-			if ((p = scanNewSymbol(kwIdentifier, s->value)) == NULL) {
-				goto err;
-			}
-			scanNext();
-			s = scanPeek();
-			if (s->id == kwParenthesesOpen) {
-				scanNext();
-				if ((p->l = aexp()) == NULL) {
-					utilError("expecting expression");
-					goto err;
-				}
-				s = scanPeek();
-				if (s->id == kwComma) {
-					scanNext();
-					if ((p->r = aexp()) == NULL) {
-						utilError("expecting expression");
-						goto err;
-					}
-				}
-				s = scanPeek();
-				if (s->id != kwParenthesesClose) {
-					utilError("expecting close parentheses");
-					goto err;
-				}
-				scanNext();
-			}
-			if (strchr(p->value, '$') != NULL) {
-				s = scanPeek();
-				if (s->id != kwLogicalLT && s->id != kwLogicalLTE && s->id != kwLogicalEQ && s->id != kwLogicalNE && s->id != kwLogicalGT && s->id != kwLogicalGTE) {
-					goto err;
-				}
-				p->id = s->id;
-				if ((p->l = scanNewSymbol(kwIdentifier, p->value)) == NULL) {
-					goto err;
-				}
-				p->value = NULL;
-				scanNext();
-				if ((p->r = sexp()) == NULL) {
-					utilError("expecting string expression");
-					goto err;
-				}
-			}
-			break;
-		case kwString:
-			if ((p = scanNewSymbol(kwString, s->value)) == NULL) {
-				goto err;
-			}
-			scanNext();
-			s = scanPeek();
-			if (s->id != kwLogicalLT && s->id != kwLogicalLTE && s->id != kwLogicalEQ && s->id != kwLogicalNE && s->id != kwLogicalGT && s->id != kwLogicalGTE) {
-				utilError("expecting logical operator");
-				goto err;
-			}
-			if ((p->l = scanNewSymbol(kwString, p->value)) == NULL) {
-				goto err;
-			}
-			p->id = s->id;
-			p->value = NULL;
-			scanNext();
-			if ((p->r = sexp()) == NULL) {
-				utilError("expecting string expression");
-				goto err;
-			}
-			break;
-		case kwNumeric:
-			if ((p = scanNewSymbol(kwNumeric, s->value)) == NULL) {
-				goto err;
-			}
-			scanNext();
-			break;
-		case kwABS:
-		case kwATN:
-		case kwCLOG:
-		case kwCOS:
-		case kwEXP:
-		case kwINT:
-		case kwLEN:
-		case kwLOG:
-		case kwRND:
-		case kwSGN:
-		case kwSIN:
-		case kwSQR:
-		case kwSTR:
-			if ((p = scanNewSymbol(s->id, NULL)) == NULL) {
-				goto err;
-			}
-			scanNext();
-			s = scanPeek();
-			if (s->id != kwParenthesesOpen) {
-				utilError("expecting open parentheses");
-				goto err;
-			}
-			scanNext();
-			if ((p->l = aexp()) == NULL) {
-				utilError("expecting arithmetic expression");
-				goto err;
-			}
-			s = scanPeek();
-			if (s->id != kwParenthesesClose) {
-				utilError("expecting close parentheses");
-				goto err;
-			}
-			scanNext();
-			break;
-		case kwASC:
-		case kwVAL:
-			if ((p = scanNewSymbol(s->id, NULL)) == NULL) {
-				goto err;
-			}
-			scanNext();
-			s = scanPeek();
-			if (s->id != kwParenthesesOpen) {
-				utilError("expecting open parentheses");
-				goto err;
-			}
-			scanNext();
-			if ((p->l = sexp()) == NULL) {
-				utilError("expecting string expression");
-				goto err;
-			}
-			scanNext();
-			s = scanPeek();
-			if (s->id != kwParenthesesClose) {
-				utilError("expecting close parentheses");
-				goto err;
-			}
-			break;
-	}
-	return(p);
+    symbolType *p = NULL;
+    symbolType *s = scanPeek();
+    switch (s->id) {
+        case kwParenthesesOpen:
+            scanNext();
+            if ((p = scanNewSymbol(kwSubExpression, NULL)) == NULL) {
+                goto err;
+            }
+            p->id = kwSubExpression;
+            if ((p->r = aexp()) == NULL) {
+                goto err;
+            }
+            s = scanPeek();
+            if (s->id != kwParenthesesClose) {
+                utilError("expected closing parentheses");
+                goto err;
+            }
+            scanNext();
+            break;
+        case kwIdentifier:
+            if ((p = scanNewSymbol(kwIdentifier, s->value)) == NULL) {
+                goto err;
+            }
+            scanNext();
+            s = scanPeek();
+            if (s->id == kwParenthesesOpen) {
+                scanNext();
+                if ((p->l = aexp()) == NULL) {
+                    utilError("expecting expression");
+                    goto err;
+                }
+                s = scanPeek();
+                if (s->id == kwComma) {
+                    scanNext();
+                    if ((p->r = aexp()) == NULL) {
+                        utilError("expecting expression");
+                        goto err;
+                    }
+                }
+                s = scanPeek();
+                if (s->id != kwParenthesesClose) {
+                    utilError("expecting close parentheses");
+                    goto err;
+                }
+                scanNext();
+            }
+            if (strchr(p->value, '$') != NULL) {
+                /* the whole variable, subscripts included, is the left operand */
+                return(stringComparison(p));
+            }
+            break;
+        case kwString:
+            if ((p = scanNewSymbol(kwString, s->value)) == NULL) {
+                goto err;
+            }
+            scanNext();
+            return(stringComparison(p));
+        case kwCHR:
+        case kwERR:
+            if ((p = sexp()) == NULL) {
+                goto err;
+            }
+            return(stringComparison(p));
+        case kwERL:
+            /* line number of the last error a TRAP caught */
+            if ((p = scanNewSymbol(kwERL, NULL)) == NULL) {
+                goto err;
+            }
+            scanNext();
+            break;
+        case kwNumeric:
+            if ((p = scanNewSymbol(kwNumeric, s->value)) == NULL) {
+                goto err;
+            }
+            scanNext();
+            break;
+        case kwABS:
+        case kwATN:
+        case kwCLOG:
+        case kwCOS:
+        case kwEXP:
+        case kwINT:
+        case kwLOG:
+        case kwPEEK:
+        case kwRND:
+        case kwSGN:
+        case kwSIN:
+        case kwSQR:
+        case kwSTR:
+            if ((p = scanNewSymbol(s->id, NULL)) == NULL) {
+                goto err;
+            }
+            scanNext();
+            s = scanPeek();
+            if (s->id != kwParenthesesOpen) {
+                utilError("expecting open parentheses");
+                goto err;
+            }
+            scanNext();
+            if ((p->l = aexp()) == NULL) {
+                utilError("expecting arithmetic expression");
+                goto err;
+            }
+            s = scanPeek();
+            if (s->id != kwParenthesesClose) {
+                utilError("expecting close parentheses");
+                goto err;
+            }
+            scanNext();
+            break;
+        case kwASC:
+        case kwLEN:
+        case kwVAL:
+            /* functions of a string that return a number */
+            if ((p = scanNewSymbol(s->id, NULL)) == NULL) {
+                goto err;
+            }
+            scanNext();
+            s = scanPeek();
+            if (s->id != kwParenthesesOpen) {
+                utilError("expecting open parentheses");
+                goto err;
+            }
+            scanNext();
+            if ((p->l = sexp()) == NULL) {
+                utilError("expecting string expression");
+                goto err;
+            }
+            s = scanPeek();
+            if (s->id != kwParenthesesClose) {
+                utilError("expecting close parentheses");
+                goto err;
+            }
+            scanNext();
+            break;
+        default:
+            break;
+    }
+    return(p);
 err:
-	if (p != NULL) {
-		progDeleteExpression(p);
-	}
-	return(NULL);
+    if (p != NULL) {
+        progDeleteExpression(p);
+    }
+    return(NULL);
+}
+
+
+/*
+ * A string operand can only be used in a comparison with another string:
+ * left <op> sexp. The comparison node's value is set to "$" so eval compares
+ * the operands as strings rather than as numbers. Takes ownership of left.
+ */
+static symbolType *stringComparison(symbolType *left) {
+    symbolType *p = NULL;
+    symbolType *s = scanPeek();
+    if (s->id != kwLogicalLT && s->id != kwLogicalLTE && s->id != kwLogicalEQ && s->id != kwLogicalNE && s->id != kwLogicalGT && s->id != kwLogicalGTE) {
+        utilError("expecting logical operator");
+        goto err;
+    }
+    if ((p = scanNewSymbol(s->id, "$")) == NULL) {
+        goto err;
+    }
+    p->l = left;
+    left = NULL;
+    scanNext();
+    if ((p->r = sexp()) == NULL) {
+        utilError("expecting string expression");
+        goto err;
+    }
+    return(p);
+err:
+    progDeleteExpression(left);
+    progDeleteExpression(p);
+    return(NULL);
 }
 
 
 static symbolType *sexp(void) {
-	symbolType *s;
-	symbolType *n = NULL;
-	s = scanPeek();
-	if (s->id == kwString) {
-		if ((n = scanNewSymbol(kwString, s->value)) == NULL) {
-			goto err;
-		}
-		scanNext();
-	} else if (s->id == kwIdentifier) {
-		if (strchr(s->value, '$') != NULL) {
-			if ((n = scanNewSymbol(kwIdentifier, s->value)) == NULL) {
-				goto err;
-			}
-			scanNext();
-			s = scanPeek();
-			if (s->id == kwParenthesesOpen) {
-				scanNext();
-				if ((n->l = aexp()) == NULL) {
-					utilError("expecting arithmetic expression");
-					goto err;
-				}
-				s = scanPeek();
-				if (s->id == kwComma) {
-					scanNext();
-					if ((n->r = aexp()) == NULL) {
-						utilError("expecting arithmetic expression");
-						goto err;
-					}
-					s = scanPeek();
-				}
-				if (s->id != kwParenthesesClose) {
-					utilError("expecting close parentheses");
-					goto err;
-				}
-				scanNext();
-			}
-		} else {
-			goto err;
-		}
-	} else if (s->id == kwCHR) {
-		if ((n = scanNewSymbol(s->id, NULL)) == NULL) {
-			goto err;
-		}
-		scanNext();
-		s = scanPeek();
-		if (s->id != kwParenthesesOpen) {
-			utilError("expecting open parentheses");
-			goto err;
-		}
-		scanNext();
-		if ((n->l = aexp()) == NULL) {
-			utilError("expecting arithmetic expression");
-			goto err;
-		}
-		s = scanPeek();
-		if (s->id != kwParenthesesClose) {
-			utilError("expecting close parentheses");
-			goto err;
-		}
-		scanNext();
-	}
-	else if (s->id == kwSTR) {
-		if ((n = scanNewSymbol(s->id, NULL)) == NULL) {
-			goto err;
-		}
-		scanNext();
-		s = scanPeek();
-		if (s->id != kwParenthesesOpen) {
-			utilError("expecting open parentheses");
-			goto err;
-		}
-		scanNext();
-		if ((n->l = aexp()) == NULL) {
-			utilError("expecting arithmetic expression");
-			goto err;
-		}
-		s = scanPeek();
-		if (s->id != kwParenthesesClose) {
-			utilError("expecting close parentheses");
-			goto err;
-		}
-		scanNext();
-	}
-	return(n);
+    symbolType *s;
+    symbolType *n = NULL;
+    s = scanPeek();
+    if (s->id == kwString) {
+        if ((n = scanNewSymbol(kwString, s->value)) == NULL) {
+            goto err;
+        }
+        scanNext();
+    } else if (s->id == kwIdentifier) {
+        if (strchr(s->value, '$') != NULL) {
+            if ((n = scanNewSymbol(kwIdentifier, s->value)) == NULL) {
+                goto err;
+            }
+            scanNext();
+            s = scanPeek();
+            if (s->id == kwParenthesesOpen) {
+                scanNext();
+                if ((n->l = aexp()) == NULL) {
+                    utilError("expecting arithmetic expression");
+                    goto err;
+                }
+                s = scanPeek();
+                if (s->id == kwComma) {
+                    scanNext();
+                    if ((n->r = aexp()) == NULL) {
+                        utilError("expecting arithmetic expression");
+                        goto err;
+                    }
+                    s = scanPeek();
+                }
+                if (s->id != kwParenthesesClose) {
+                    utilError("expecting close parentheses");
+                    goto err;
+                }
+                scanNext();
+            }
+        } else {
+            goto err;
+        }
+    } else if (s->id == kwERR) {
+        /* message of the last error a TRAP caught */
+        if ((n = scanNewSymbol(kwERR, NULL)) == NULL) {
+            goto err;
+        }
+        scanNext();
+    } else if (s->id == kwCHR) {
+        if ((n = scanNewSymbol(s->id, NULL)) == NULL) {
+            goto err;
+        }
+        scanNext();
+        s = scanPeek();
+        if (s->id != kwParenthesesOpen) {
+            utilError("expecting open parentheses");
+            goto err;
+        }
+        scanNext();
+        if ((n->l = aexp()) == NULL) {
+            utilError("expecting arithmetic expression");
+            goto err;
+        }
+        s = scanPeek();
+        if (s->id != kwParenthesesClose) {
+            utilError("expecting close parentheses");
+            goto err;
+        }
+        scanNext();
+    }
+    else if (s->id == kwSTR) {
+        if ((n = scanNewSymbol(s->id, NULL)) == NULL) {
+            goto err;
+        }
+        scanNext();
+        s = scanPeek();
+        if (s->id != kwParenthesesOpen) {
+            utilError("expecting open parentheses");
+            goto err;
+        }
+        scanNext();
+        if ((n->l = aexp()) == NULL) {
+            utilError("expecting arithmetic expression");
+            goto err;
+        }
+        s = scanPeek();
+        if (s->id != kwParenthesesClose) {
+            utilError("expecting close parentheses");
+            goto err;
+        }
+        scanNext();
+    }
+    return(n);
 err:
-	if (n != NULL) {
-		free(n);
-	}
-	return(NULL);
+    /* n may already have subscript or argument expressions attached */
+    progDeleteExpression(n);
+    return(NULL);
 }
 
 
 static symbolType *parseAssignment(void) {
-	symbolType *s;
-	symbolType *i = NULL;
-	symbolType *e = NULL;
-	symbolType *a = NULL;
-	s = scanPeek();
-	if ((i = scanNewSymbol(kwIdentifier, s->value)) == NULL) {
-		goto err;
-	}
-	scanNext();
-	s = scanPeek();
-	if (s->id == kwParenthesesOpen) {
-		scanNext();
-		if ((i->l = aexp()) == NULL) {
-			utilError("expecting arithmetic expression");
-			goto err;
-		}
-		s = scanPeek();
-		if (s->id == kwComma) {
-			scanNext();
-			if ((i->r = aexp()) == NULL) {
-				utilError("expecting arithmetic expression");
-				goto err;
-			}
-		}
-		s = scanPeek();
-		if (s->id != kwParenthesesClose) {
-			utilError("expecting close parentheses");
-			goto err;
-		}
-		scanNext();
-	} 
-	s = scanPeek();
-	if (s->id == kwLogicalEQ) {
-		scanNext();
-		s = scanPeek();
-		if (strchr(i->value, '$') != NULL) {
-			if ((e = sexp()) == NULL) {
-				utilError("expecting string expression");
-				goto err;
-			}
-		} else {
-			if ((e = aexp()) == NULL) {
-				utilError("expecting arithmetic expression");
-				goto err;
-			}
-		}
-	} else {
-		utilError("expecting assignment operator '=', got %i\n", s->id);
-		goto err;
-	}
-	if ((a = scanNewSymbol(kwAssignment, NULL)) == NULL) {
-		goto err;
-	}
-	a->l = i;
-	a->r = e;
-	return(a);
+    symbolType *s;
+    symbolType *i = NULL;
+    symbolType *e = NULL;
+    symbolType *a = NULL;
+    s = scanPeek();
+    if ((i = scanNewSymbol(kwIdentifier, s->value)) == NULL) {
+        goto err;
+    }
+    scanNext();
+    s = scanPeek();
+    if (s->id == kwParenthesesOpen) {
+        scanNext();
+        if ((i->l = aexp()) == NULL) {
+            utilError("expecting arithmetic expression");
+            goto err;
+        }
+        s = scanPeek();
+        if (s->id == kwComma) {
+            scanNext();
+            if ((i->r = aexp()) == NULL) {
+                utilError("expecting arithmetic expression");
+                goto err;
+            }
+        }
+        s = scanPeek();
+        if (s->id != kwParenthesesClose) {
+            utilError("expecting close parentheses");
+            goto err;
+        }
+        scanNext();
+    }
+    s = scanPeek();
+    if (s->id == kwLogicalEQ) {
+        scanNext();
+        s = scanPeek();
+        if (strchr(i->value, '$') != NULL) {
+            if ((e = sexp()) == NULL) {
+                utilError("expecting string expression");
+                goto err;
+            }
+        } else {
+            if ((e = aexp()) == NULL) {
+                utilError("expecting arithmetic expression");
+                goto err;
+            }
+        }
+    } else {
+        utilError("expecting assignment operator '='");
+        goto err;
+    }
+    if ((a = scanNewSymbol(kwAssignment, NULL)) == NULL) {
+        goto err;
+    }
+    a->l = i;
+    a->r = e;
+    return(a);
 err:
-	if (a != NULL) {
-		progDeleteExpression(a);
-	} else {
-		if (i != NULL) {
-			progDeleteExpression(i);
-		}
-		if (e != NULL) {
-			progDeleteExpression(e);
-		}
-	}
-	return(NULL);
+    if (a != NULL) {
+        progDeleteExpression(a);
+    } else {
+        if (i != NULL) {
+            progDeleteExpression(i);
+        }
+        if (e != NULL) {
+            progDeleteExpression(e);
+        }
+    }
+    return(NULL);
 }
 
 
 static int insAssignment(progLineType *pl) {
-	symbolType *a = NULL;
-	if ((a = parseAssignment()) == NULL) {
-		goto err;
-	}
-	if (progAppendInstruction(pl, kwAssignment, a)) {
-		goto err;
-	}
-	return(0);
+    symbolType *a = NULL;
+    if ((a = parseAssignment()) == NULL) {
+        goto err;
+    }
+    if (progAppendInstruction(pl, kwAssignment, a)) {
+        goto err;
+    }
+    return(0);
 err:
-	return(1);
+    return(1);
 }
 
 
 static int insBYE(progLineType *pl) {
-	scanNext();
-	return(progAppendInstruction(pl, kwBYE, NULL));
+    scanNext();
+    return(progAppendInstruction(pl, kwBYE, NULL));
 }
 
 static int insCLR(progLineType *pl) {
-	scanNext();
-	return(progAppendInstruction(pl, kwCLR, NULL));
+    scanNext();
+    return(progAppendInstruction(pl, kwCLR, NULL));
 }
 
 
 static int insCLS(progLineType *pl) {
-	scanNext();
-	return(progAppendInstruction(pl, kwCLS, NULL));
+    scanNext();
+    return(progAppendInstruction(pl, kwCLS, NULL));
 }
 
 
 static int insCONT(progLineType *pl) {
-	scanNext();
-	return(progAppendInstruction(pl, kwCONT, NULL));
+    scanNext();
+    return(progAppendInstruction(pl, kwCONT, NULL));
+}
+
+
+static int insDEG(progLineType *pl) {
+    scanNext();
+    return(progAppendInstruction(pl, kwDEG, NULL));
+}
+
+
+static int insRAD(progLineType *pl) {
+    scanNext();
+    return(progAppendInstruction(pl, kwRAD, NULL));
 }
 
 
 static int insDATA(progLineType *pl) {
-	symbolType *s = NULL;
-	char **t = NULL;
-	int i = 0;
-	s = scanGetText();
-	if (s->id != kwText) {
-		utilError("unexpected string: [%s]", s->value);
-		goto err;
-	}
-	if ((t = strsplitz(s->value, ",")) == NULL) {
-		utilError("couldn't allocate memory");
-		goto err;
-	}
-	scanNext();
-	if (progAppendInstruction(pl, kwDATA, t)) {
-		goto err;
-	}
-	return(0);
+    symbolType *s = NULL;
+    char **t = NULL;
+    int i = 0;
+    if ((s = scanGetText()) == NULL) {
+        goto err;
+    }
+    if (s->id != kwText) {
+        utilError("unexpected string: [%s]", s->value);
+        goto err;
+    }
+    if ((t = strsplitz(s->value, ",")) == NULL) {
+        utilError("couldn't allocate memory");
+        goto err;
+    }
+    /* trim spaces around each item: DATA 1, 2 stores "1" and "2" */
+    for (i = 0; t[i] != NULL; i++) {
+        char *end;
+        while (isspace((unsigned char)*t[i])) {
+            t[i]++;
+        }
+        end = t[i] + strlen(t[i]);
+        while (end > t[i] && isspace((unsigned char)end[-1])) {
+            *--end = 0;
+        }
+    }
+    scanNext();
+    if (progAppendInstruction(pl, kwDATA, t)) {
+        goto err;
+    }
+    return(0);
 err:
-	if (t != NULL) {
-		free(t);
-	}
-	return(1);
+    if (t != NULL) {
+        free(t);
+    }
+    return(1);
 }
 
 
 static int insDIM(progLineType *pl) {
-	symbolType **aa = NULL;
-	symbolType **a = NULL;
-	symbolType *id = NULL;
-	symbolType *e1 = NULL;
-	symbolType *e2 = NULL;
-	symbolType *s;
-	unsigned long int maxDims = 1024;
-	unsigned long int numDims = 0;
-	if ((a = malloc(sizeof(symbolType *) * maxDims)) == NULL) {
-		goto err;
-	}
-	while (1) {
-		scanNext();
-		s = scanPeek();
-		if ((id = scanNewSymbol(kwIdentifier, s->value)) == NULL) {
-			goto err;
-		}
-		scanNext();
-		s = scanPeek();
-		if (s->id != kwParenthesesOpen) {
-			utilError("expecting opening parentheses");
-			goto err;
-		}
-		scanNext();
-		if ((e1 = aexp()) == NULL) {
-			utilError("expecting arithmetic expression");
-			goto err;
-		}
-		s = scanPeek();
-		if (s->id == kwComma) {
-			scanNext();
-			if ((e2 = aexp()) == NULL) {
-				utilError("expecting arithmetic expression");
-				goto err;
-			}
-		}
-		s = scanPeek();
-		if (s->id != kwParenthesesClose) {
-			utilError("expecting closing parentheses");
-			goto err;
-		}
-		id->l = e1;
-		id->r = e2;
-		a[numDims++] = id;
-		id = NULL;
-		e1 = NULL;
-		e2 = NULL;
-		scanNext();
-		s = scanPeek();
-		if (s->id != kwComma) {
-			break;
-		}
-		if (numDims == maxDims) {
-			maxDims <<= 1;
-			if ((aa = realloc(a, sizeof(symbolType *) * maxDims)) == NULL) {
-				utilError("couldn't allocate memory");
-				goto err;
-			}
-			a = aa;
-		}
-	}
-	if ((aa = realloc(a, sizeof(symbolType *) * numDims)) == NULL) {
-		utilError("couldn't allocate memory");
-		goto err;
-	}
-	a = aa;
-	if (progAppendInstruction(pl, kwDIM, a, numDims)) {
-		goto err;
-	}
-	return(0);
+    symbolType **aa = NULL;
+    symbolType **a = NULL;
+    symbolType *id = NULL;
+    symbolType *e1 = NULL;
+    symbolType *e2 = NULL;
+    symbolType *s;
+    unsigned long int maxDims = 1024;
+    unsigned long int numDims = 0;
+    if ((a = malloc(sizeof(symbolType *) * maxDims)) == NULL) {
+        goto err;
+    }
+    while (1) {
+        scanNext();
+        s = scanPeek();
+        if ((id = scanNewSymbol(kwIdentifier, s->value)) == NULL) {
+            goto err;
+        }
+        scanNext();
+        s = scanPeek();
+        if (s->id != kwParenthesesOpen) {
+            utilError("expecting opening parentheses");
+            goto err;
+        }
+        scanNext();
+        if ((e1 = aexp()) == NULL) {
+            utilError("expecting arithmetic expression");
+            goto err;
+        }
+        s = scanPeek();
+        if (s->id == kwComma) {
+            scanNext();
+            if ((e2 = aexp()) == NULL) {
+                utilError("expecting arithmetic expression");
+                goto err;
+            }
+        }
+        s = scanPeek();
+        if (s->id != kwParenthesesClose) {
+            utilError("expecting closing parentheses");
+            goto err;
+        }
+        id->l = e1;
+        id->r = e2;
+        a[numDims++] = id;
+        id = NULL;
+        e1 = NULL;
+        e2 = NULL;
+        scanNext();
+        s = scanPeek();
+        if (s->id != kwComma) {
+            break;
+        }
+        if (numDims == maxDims) {
+            maxDims <<= 1;
+            if ((aa = realloc(a, sizeof(symbolType *) * maxDims)) == NULL) {
+                utilError("couldn't allocate memory");
+                goto err;
+            }
+            a = aa;
+        }
+    }
+    if ((aa = realloc(a, sizeof(symbolType *) * numDims)) == NULL) {
+        utilError("couldn't allocate memory");
+        goto err;
+    }
+    a = aa;
+    if (progAppendInstruction(pl, kwDIM, a, numDims)) {
+        goto err;
+    }
+    return(0);
 err:
-	if (a != NULL) {
-		while (numDims) {
-			numDims--;
-			progDeleteExpression(a[numDims]->l);
-			progDeleteExpression(a[numDims]->r);
-			free(a[numDims]);
-		}
-		free(a);
-	}
-	if (id != NULL) {
-		progDeleteExpression(id);
-	}
-	if (e1 != NULL) {
-		progDeleteExpression(e1);
-	}
-	if (e2 != NULL) {
-		progDeleteExpression(e2);
-	}
-	return(1);
+    if (a != NULL) {
+        while (numDims) {
+            numDims--;
+            progDeleteExpression(a[numDims]->l);
+            progDeleteExpression(a[numDims]->r);
+            free(a[numDims]);
+        }
+        free(a);
+    }
+    if (id != NULL) {
+        progDeleteExpression(id);
+    }
+    if (e1 != NULL) {
+        progDeleteExpression(e1);
+    }
+    if (e2 != NULL) {
+        progDeleteExpression(e2);
+    }
+    return(1);
 }
 
 
 static int insEND(progLineType *pl) {
-	scanNext();
-	return(progAppendInstruction(pl, kwEND, NULL));
+    scanNext();
+    return(progAppendInstruction(pl, kwEND, NULL));
 }
 
 
 static int insFOR(progLineType *pl) {
-	symbolType **a = NULL;
-	symbolType *step = NULL;
-	symbolType *to = NULL;
-	symbolType *assign = NULL;
-	symbolType *s;
-	scanNext();
-	if ((assign = parseAssignment()) == NULL) {
-		utilError("expecting assignment");
-		goto err;
-	}
-	s = scanPeek();
-	if (s->id != kwTO) {
-		utilError("expecting TO");
-		goto err;
-	}
-	scanNext();
-	if ((to = aexp()) == NULL) {
-		utilError("expecting arithmetic expression");
-		goto err;
-	}
-	s = scanPeek();
-	if (s->id == kwSTEP) {
-		scanNext();
-		if ((step = aexp()) == NULL) {
-			utilError("expecting arithmetic expression");
-			goto err;
-		}
-	}
-	if (progAppendInstruction(pl, kwFOR, assign, to, step)) {
-		goto err;
-	}
-	scanNext();
-	return(0);
+    symbolType *step = NULL;
+    symbolType *to = NULL;
+    symbolType *assign = NULL;
+    symbolType *s;
+    scanNext();
+    if ((assign = parseAssignment()) == NULL) {
+        utilError("expecting assignment");
+        goto err;
+    }
+    s = scanPeek();
+    if (s->id != kwTO) {
+        utilError("expecting TO");
+        goto err;
+    }
+    scanNext();
+    if ((to = aexp()) == NULL) {
+        utilError("expecting arithmetic expression");
+        goto err;
+    }
+    s = scanPeek();
+    if (s->id == kwSTEP) {
+        scanNext();
+        if ((step = aexp()) == NULL) {
+            utilError("expecting arithmetic expression");
+            goto err;
+        }
+    }
+    if (progAppendInstruction(pl, kwFOR, assign, to, step)) {
+        goto err;
+    }
+    return(0);
 err:
-	if (assign != NULL) {
-		progDeleteExpression(assign);
-	}
-	if (to != NULL) {
-		progDeleteExpression(to);
-	}
-	if (step != NULL) {
-		progDeleteExpression(step);
-	}
-	return(1);
+    if (assign != NULL) {
+        progDeleteExpression(assign);
+    }
+    if (to != NULL) {
+        progDeleteExpression(to);
+    }
+    if (step != NULL) {
+        progDeleteExpression(step);
+    }
+    return(1);
 }
 
 
 static int insGOSUB(progLineType *pl) {
-	scanNext();
-	symbolType *s = aexp();
-	if (s == NULL) {
-		utilError("expected aexp");
-		goto err;
-	}
-	if (progAppendInstruction(pl, kwGOSUB, s)) {
-		goto err;
-	}
-	return(0);
+    scanNext();
+    symbolType *s = aexp();
+    if (s == NULL) {
+        utilError("expected aexp");
+        goto err;
+    }
+    if (progAppendInstruction(pl, kwGOSUB, s)) {
+        goto err;
+    }
+    return(0);
 err:
-	if (s != NULL) {
-		progDeleteExpression(s);
-	}
-	return(1);
+    if (s != NULL) {
+        progDeleteExpression(s);
+    }
+    return(1);
 }
 
 
 static int insGOTO(progLineType *pl) {
-	scanNext();
-	symbolType *s = aexp();
-	if (s == NULL) {
-		utilError("expected aexp");
-		return(1);
-	}
-	if (progAppendInstruction(pl, kwGOTO, s)) {
-		goto err;
-	}
-	return(0);
+    scanNext();
+    symbolType *s = aexp();
+    if (s == NULL) {
+        utilError("expected aexp");
+        return(1);
+    }
+    if (progAppendInstruction(pl, kwGOTO, s)) {
+        goto err;
+    }
+    return(0);
 err:
-	if (s != NULL) {
-		progDeleteExpression(s);
-	}
-	return(1);
+    if (s != NULL) {
+        progDeleteExpression(s);
+    }
+    return(1);
 }
 
 
 static int insIF(progLineType *pl) {
-	symbolType *e = NULL;
-	void *i = NULL;
-	symbolType *s;
-	progLineType ip;
-	int iIsExp = 1;
-	memset(&ip, 0, sizeof(progLineType));
-	scanNext();
-	if ((e = aexp()) == NULL) {
-		utilError("expecting arithmetic expression");
-		goto err;
-	}
-	s = scanPeek();
-	if (s->id != kwTHEN) {
-		utilError("expecting keyword 'then'");
-		goto err;
-	}
-	scanNext();
-	s = scanPeek();
-	if (s->id == kwNumeric) {
-		if ((i = aexp()) == NULL) {
-			goto err;
-		}
-		iIsExp = 1;
-	} else {
-		if (compoundStatement(&ip)) {
-			utilError("expecting statement");
-			goto err;
-		}
-		i = ip.firstInstruction;
-		iIsExp = 0;
-	}
-	if (progAppendInstruction(pl, kwIF, e, i, iIsExp)) {
-		goto err;
-	}
-	return(0);
+    symbolType *e = NULL;
+    void *i = NULL;
+    symbolType *s;
+    progLineType ip;
+    int iIsExp = 1;
+    memset(&ip, 0, sizeof(progLineType));
+    scanNext();
+    if ((e = aexp()) == NULL) {
+        utilError("expecting arithmetic expression");
+        goto err;
+    }
+    s = scanPeek();
+    if (s->id != kwTHEN) {
+        utilError("expecting keyword 'then'");
+        goto err;
+    }
+    scanNext();
+    s = scanPeek();
+    if (s->id == kwNumeric) {
+        if ((i = aexp()) == NULL) {
+            goto err;
+        }
+        iIsExp = 1;
+    } else {
+        /* take ownership first: a failed compoundStatement can leave some instructions */
+        iIsExp = 0;
+        if (compoundStatement(&ip)) {
+            i = ip.firstInstruction;
+            utilError("expecting statement");
+            goto err;
+        }
+        i = ip.firstInstruction;
+    }
+    if (progAppendInstruction(pl, kwIF, e, i, iIsExp)) {
+        goto err;
+    }
+    return(0);
 err:
-	if (i) {
-		if (!iIsExp) {
-			progDeleteInstructions(i);
-		} else {
-			progDeleteExpression(i);
-		}
-	}
-	if (e) {
-		progDeleteExpression(e);
-	}
-	return(1);
+    if (i) {
+        if (!iIsExp) {
+            progDeleteInstructions(i);
+        } else {
+            progDeleteExpression(i);
+        }
+    }
+    if (e) {
+        progDeleteExpression(e);
+    }
+    return(1);
 }
 
 
 static int insINPUT(progLineType *pl) {
-	symbolType **aa = NULL;
-	symbolType **a = NULL;
-	symbolType *id = NULL;
-	symbolType *e1 = NULL;
-	symbolType *e2 = NULL;
-	symbolType *s;
-	unsigned long int maxVars = 1024;
-	unsigned long int numVars = 0;
-	if ((a = malloc(sizeof(symbolType *) * maxVars)) == NULL) {
-		goto err;
-	}
-	while (1) {
-		scanNext();
-		s = scanPeek();
-		if (s->id != kwIdentifier) {
-			utilError("expecting identifier");
-			goto err;
-		}
-		if ((id = scanNewSymbol(kwIdentifier, s->value)) == NULL) {
-			goto err;
-		}
-		scanNext();
-		s = scanPeek();
-		if (s->id == kwParenthesesOpen) {
-			if (strchr(id->value, '$') != NULL) {
-				utilError("string variable cannot be subscripted");
-				goto err;
-			}
-			scanNext();
-			if ((e1 = aexp()) == NULL) {
-				utilError("expecting arithmetic expression");
-				goto err;
-			}
-			s = scanPeek();
-			if (s->id == kwComma) {
-				if (strchr(id->value, '$') != NULL) {
-					utilError("only one dimension allowed for string variables");
-					goto err;
-				}
-				scanNext();
-				if ((e2 = aexp()) == NULL) {
-					utilError("expecting arithmetic expression");
-					goto err;
-				}
-			}
-			s = scanPeek();
-			if (s->id != kwParenthesesClose) {
-				utilError("expecting closing parentheses");
-				goto err;
-			}
-			scanNext();
-			id->l = e1;
-			id->r = e2;
-		}
-		a[numVars++] = id;
-		id = NULL;
-		e1 = NULL;
-		e2 = NULL;
-		s = scanPeek();
-		if (s->id != kwComma) {
-			break;
-		}
-		if (numVars == maxVars) {
-			maxVars <<= 1;
-			if ((aa = realloc(a, (sizeof(symbolType *) * maxVars))) == NULL) {
-				utilError("couldn't allocate memory");
-				goto err;
-			}
-			a = aa;
-			goto err;
-		}
-	}
-	if ((aa = realloc(a, (sizeof(symbolType *) * numVars))) == NULL) {
-		utilError("couldn't allocate memory");
-		goto err;
-	}
-	a = aa;
-	if (progAppendInstruction(pl, kwINPUT, a, numVars)) {
-		goto err;
-	}
-	return(0);
+    symbolType **aa = NULL;
+    symbolType **a = NULL;
+    symbolType *id = NULL;
+    symbolType *e1 = NULL;
+    symbolType *e2 = NULL;
+    symbolType *s;
+    unsigned long int maxVars = 1024;
+    unsigned long int numVars = 0;
+    if ((a = malloc(sizeof(symbolType *) * maxVars)) == NULL) {
+        goto err;
+    }
+    while (1) {
+        scanNext();
+        s = scanPeek();
+        if (s->id != kwIdentifier) {
+            utilError("expecting identifier");
+            goto err;
+        }
+        if ((id = scanNewSymbol(kwIdentifier, s->value)) == NULL) {
+            goto err;
+        }
+        scanNext();
+        s = scanPeek();
+        if (s->id == kwParenthesesOpen) {
+            /*
+             * <avar> | <string id> only (BNF). "String variables are allowed
+             * only if they are not subscripted. Matrix variables are not
+             * allowed", where a matrix variable is "also called a Subscripted
+             * Variable. An element of an array or matrix." (Manual, INPUT and
+             * Table 1.1)
+             */
+            utilError("INPUT takes only unsubscripted variables");
+            goto err;
+        }
+        a[numVars++] = id;
+        id = NULL;
+        e1 = NULL;
+        e2 = NULL;
+        s = scanPeek();
+        if (s->id != kwComma) {
+            break;
+        }
+        if (numVars == maxVars) {
+            maxVars <<= 1;
+            if ((aa = realloc(a, (sizeof(symbolType *) * maxVars))) == NULL) {
+                utilError("couldn't allocate memory");
+                goto err;
+            }
+            a = aa;
+        }
+    }
+    if ((aa = realloc(a, (sizeof(symbolType *) * numVars))) == NULL) {
+        utilError("couldn't allocate memory");
+        goto err;
+    }
+    a = aa;
+    if (progAppendInstruction(pl, kwINPUT, a, numVars)) {
+        goto err;
+    }
+    return(0);
 err:
-	if (a != NULL) {
-		while (numVars) {
-			numVars--;
-			progDeleteExpression(a[numVars]->l);
-			progDeleteExpression(a[numVars]->r);
-			free(a[numVars]);
-		}
-		free(a);
-	}
-	if (id != NULL) {
-		progDeleteExpression(id);
-	}
-	if (e1 != NULL) {
-		progDeleteExpression(e1);
-	}
-	if (e2 != NULL) {
-		progDeleteExpression(e2);
-	}
-	return(1);
+    if (a != NULL) {
+        while (numVars) {
+            numVars--;
+            progDeleteExpression(a[numVars]->l);
+            progDeleteExpression(a[numVars]->r);
+            free(a[numVars]);
+        }
+        free(a);
+    }
+    if (id != NULL) {
+        progDeleteExpression(id);
+    }
+    if (e1 != NULL) {
+        progDeleteExpression(e1);
+    }
+    if (e2 != NULL) {
+        progDeleteExpression(e2);
+    }
+    return(1);
 }
 
 
 static int insLET(progLineType *pl) {
-	symbolType *a = NULL;
-	scanNext();
-	if ((a = parseAssignment()) == NULL) {
-		goto err;
-	}
-	if (progAppendInstruction(pl, kwLET, a)) {
-		goto err;
-	}
-	scanNext();
-	return(0);
+    symbolType *a = NULL;
+    scanNext();
+    if ((a = parseAssignment()) == NULL) {
+        goto err;
+    }
+    if (progAppendInstruction(pl, kwLET, a)) {
+        goto err;
+    }
+    return(0);
 err:
-	if (a != NULL) {
-		progDeleteExpression(a);
-	} 
-	return(1);
+    if (a != NULL) {
+        progDeleteExpression(a);
+    }
+    return(1);
 }
 
 
 static int insLIST(progLineType *pl) {
-	symbolType *l1 = NULL;
-	symbolType *l2 = NULL;
-	symbolType *s;
-	scanNext();
-	s = scanPeek();
-	if (s->id != kwEol) {
-		if ((l1 = aexp()) == NULL) {
-			goto err;
-		}
-		s = scanPeek();
-		if (s->id == kwComma) {
-			scanNext();
-			if ((l2 = aexp()) == NULL) {
-				goto err;
-			}
-			scanNext();
-		}
-	}
-	if (progAppendInstruction(pl, kwLIST, l1, l2)) {
-		goto err;
-	}
-	return(0);
+    symbolType *l1 = NULL;
+    symbolType *l2 = NULL;
+    symbolType *s;
+    scanNext();
+    s = scanPeek();
+    if (!endOfStatement(s)) {
+        if ((l1 = aexp()) == NULL) {
+            goto err;
+        }
+        s = scanPeek();
+        if (s->id == kwComma) {
+            scanNext();
+            if ((l2 = aexp()) == NULL) {
+                goto err;
+            }
+        }
+    }
+    if (progAppendInstruction(pl, kwLIST, l1, l2)) {
+        goto err;
+    }
+    return(0);
 err:
-	if (l1 != NULL) {
-		progDeleteExpression(l1);
-	}
-	if (l2 != NULL) {
-		progDeleteExpression(l2);
-	}
-	return(1);
+    if (l1 != NULL) {
+        progDeleteExpression(l1);
+    }
+    if (l2 != NULL) {
+        progDeleteExpression(l2);
+    }
+    return(1);
 }
 
 
 static int insLOAD(progLineType *pl) {
-	symbolType *s = NULL;
-	scanNext();
-	if ((s = sexp()) == NULL) {
-		utilError("expecting string expression");
-		goto err;
-	}
-	if (progAppendInstruction(pl, kwLOAD, s)) {
-		goto err;
-	}
-	scanNext();
-	return(0);
+    symbolType *s = NULL;
+    scanNext();
+    if ((s = sexp()) == NULL) {
+        utilError("expecting string expression");
+        goto err;
+    }
+    if (progAppendInstruction(pl, kwLOAD, s)) {
+        goto err;
+    }
+    return(0);
 err:
-	if (s != NULL) {
-		progDeleteExpression(s);
-	}
-	return(1);
+    if (s != NULL) {
+        progDeleteExpression(s);
+    }
+    return(1);
 }
 
 
 static int insNEW(progLineType *pl) {
-	scanNext();
-	return(progAppendInstruction(pl, kwNEW, NULL));
+    scanNext();
+    return(progAppendInstruction(pl, kwNEW, NULL));
 }
 
 
 static int insNEXT(progLineType *pl) {
-	symbolType *s = NULL;
-	symbolType *v = NULL;
-	scanNext();
-	s = scanPeek();
-	if (s->id != kwIdentifier) {
-		utilError("expecting identifier");
-		goto err;
-	}
-	if ((v = scanNewSymbol(kwIdentifier, s->value)) == NULL) {
-		goto err;
-	}
-	if (progAppendInstruction(pl, kwNEXT, v)) {
-		goto err;
-	}
-	scanNext();
-	return(0);
+    symbolType *s = NULL;
+    symbolType *v = NULL;
+    scanNext();
+    s = scanPeek();
+    if (s->id != kwIdentifier) {
+        utilError("expecting identifier");
+        goto err;
+    }
+    if ((v = scanNewSymbol(kwIdentifier, s->value)) == NULL) {
+        goto err;
+    }
+    if (progAppendInstruction(pl, kwNEXT, v)) {
+        goto err;
+    }
+    scanNext();
+    return(0);
 err:
-	if (v != NULL) {
-		progDeleteExpression(v);
-	}
-	return(1);
+    if (v != NULL) {
+        progDeleteExpression(v);
+    }
+    return(1);
 }
 
 
 static int insON(progLineType *pl) {
-	symbolType *s = NULL;
-	symbolType *i = NULL;
-	symbolType *v = NULL;
-	symbolType **t = NULL;
-	symbolType **tt = NULL;
-	unsigned long int maxTargets = 1024;
-	unsigned long int numTargets = 0;
-	scanNext();
-	if ((v = aexp()) == NULL) {
-		utilError("expecting arithmetic expression");
-		goto err;
-	}
-	s = scanPeek();
-	if (s->id != kwGOTO && s->id != kwGOSUB) {
-		utilError("expecting GOTO or GOSUB");
-		goto err;
-	}
-	if ((i = scanNewSymbol(s->id, NULL)) == NULL) {
-		goto err;
-	}
-	if ((t = malloc(sizeof(symbolType *) * maxTargets)) == NULL) {
-		utilError("couldn't allocate memory");
-		goto err;
-	}
-	while (1) {
-		scanNext();
-		if ((t[numTargets] = aexp()) == NULL) {
-			utilError("expecting arithmetic expression");
-			goto err;
-		}
-		numTargets++;
-		s = scanPeek();
-		if (s->id != kwComma) {
-			break;
-		}
-		if (numTargets == maxTargets) {
-			maxTargets <<= 1;
-			if ((tt = realloc(t, sizeof(symbolType *) * maxTargets)) == NULL) {
-				utilError("couldn't allocate memory");
-				goto err;
-			}
-			t = tt;
-		}
-	}
-	if ((tt = realloc(t, sizeof(symbolType *) * numTargets)) == NULL) {
-		utilError("couldn't allocate memory");
-		goto err;
-	}
-	t = tt;
-	if (progAppendInstruction(pl, kwON, v, i, t, numTargets)) {
-		goto err;
-	}
-	return(0);
+    symbolType *s = NULL;
+    symbolType *i = NULL;
+    symbolType *v = NULL;
+    symbolType **t = NULL;
+    symbolType **tt = NULL;
+    unsigned long int maxTargets = 1024;
+    unsigned long int numTargets = 0;
+    scanNext();
+    if ((v = aexp()) == NULL) {
+        utilError("expecting arithmetic expression");
+        goto err;
+    }
+    s = scanPeek();
+    if (s->id != kwGOTO && s->id != kwGOSUB) {
+        utilError("expecting GOTO or GOSUB");
+        goto err;
+    }
+    if ((i = scanNewSymbol(s->id, NULL)) == NULL) {
+        goto err;
+    }
+    if ((t = malloc(sizeof(symbolType *) * maxTargets)) == NULL) {
+        utilError("couldn't allocate memory");
+        goto err;
+    }
+    while (1) {
+        scanNext();
+        if ((t[numTargets] = aexp()) == NULL) {
+            utilError("expecting arithmetic expression");
+            goto err;
+        }
+        numTargets++;
+        s = scanPeek();
+        if (s->id != kwComma) {
+            break;
+        }
+        if (numTargets == maxTargets) {
+            maxTargets <<= 1;
+            if ((tt = realloc(t, sizeof(symbolType *) * maxTargets)) == NULL) {
+                utilError("couldn't allocate memory");
+                goto err;
+            }
+            t = tt;
+        }
+    }
+    if ((tt = realloc(t, sizeof(symbolType *) * numTargets)) == NULL) {
+        utilError("couldn't allocate memory");
+        goto err;
+    }
+    t = tt;
+    if (progAppendInstruction(pl, kwON, v, i, t, numTargets)) {
+        goto err;
+    }
+    return(0);
 err:
-	if (i != NULL) {
-		progDeleteExpression(i);
-	}
-	if (v != NULL) {
-		progDeleteExpression(v);
-	}
-	if (t != NULL) {
-		while (numTargets) {
-			numTargets--;
-			progDeleteExpression(t[numTargets]);
-		}
-		free(t);
-	}
-	return(1);
+    if (i != NULL) {
+        progDeleteExpression(i);
+    }
+    if (v != NULL) {
+        progDeleteExpression(v);
+    }
+    if (t != NULL) {
+        while (numTargets) {
+            numTargets--;
+            progDeleteExpression(t[numTargets]);
+        }
+        free(t);
+    }
+    return(1);
 }
 
 
 static int insPOP(progLineType *pl) {
-	scanNext();
-	return(progAppendInstruction(pl, kwPOP, NULL));
+    scanNext();
+    return(progAppendInstruction(pl, kwPOP, NULL));
 }
 
 
 static int insPRINT(progLineType *pl) {
-	symbolType *s;
-	symbolType *e;
-	symbolType **aa = NULL;
-	symbolType **a = NULL;
-	unsigned long int maxExps = 1024;
-	unsigned long int numExps = 0;
-	if ((a = malloc(sizeof(symbolType *) * maxExps)) == NULL) {
-		utilError("couldn't allocate memory");
-		goto err;
-	}
-	scanNext();
-	while (1) {
-		s = scanPeek();
-		if ((e = sexp()) != NULL) {
-			a[numExps++] = e;
-		} else if ((e = aexp()) != NULL) {
-			a[numExps++] = e;
-		} else if (s->id == kwComma || s->id == kwSemicolon) {
-			if ((a[numExps++] = scanNewSymbol(s->id, NULL)) == NULL) {
-				goto err;
-			}
-			scanNext();
-		} else if (s->id == kwColon || s->id == kwEol || s->id == kwEof) {
-			break;
-		} 
-		if (numExps == maxExps) {
-			maxExps <<= 1;
-			if ((aa = realloc(a, sizeof(symbolType *) * maxExps)) == NULL) {
-				utilError("couldn't allocate memory");
-				goto err;
-			}
-			a = aa;
-		}
-	}
-	if (numExps > 0) {
-		if ((aa = realloc(a, sizeof(symbolType *) * numExps)) == NULL) {
-			utilError("couldn't allocate memory");
-			goto err;
-		}
-	} else {
-		free(a);
-		aa = NULL;
-	}
-	a = aa;
-	if (progAppendInstruction(pl, kwPRINT, a, numExps)) {
-		goto err;
-	}
-	return(0);
+    symbolType *s;
+    symbolType *e;
+    symbolType **aa = NULL;
+    symbolType **a = NULL;
+    unsigned long int maxExps = 1024;
+    unsigned long int numExps = 0;
+    if ((a = malloc(sizeof(symbolType *) * maxExps)) == NULL) {
+        utilError("couldn't allocate memory");
+        goto err;
+    }
+    scanNext();
+    while (1) {
+        s = scanPeek();
+        if ((e = sexp()) != NULL) {
+            a[numExps++] = e;
+        } else if ((e = aexp()) != NULL) {
+            a[numExps++] = e;
+        } else if (s->id == kwComma || s->id == kwSemicolon) {
+            if ((a[numExps++] = scanNewSymbol(s->id, NULL)) == NULL) {
+                goto err;
+            }
+            scanNext();
+        } else if (s->id == kwColon || s->id == kwEol || s->id == kwEof) {
+            break;
+        } else {
+            /* nothing above consumed this token, so stop rather than loop forever */
+            utilError("unexpected %s in PRINT", scanDescribe(s));
+            goto err;
+        }
+        if (numExps == maxExps) {
+            maxExps <<= 1;
+            if ((aa = realloc(a, sizeof(symbolType *) * maxExps)) == NULL) {
+                utilError("couldn't allocate memory");
+                goto err;
+            }
+            a = aa;
+        }
+    }
+    if (numExps > 0) {
+        if ((aa = realloc(a, sizeof(symbolType *) * numExps)) == NULL) {
+            utilError("couldn't allocate memory");
+            goto err;
+        }
+    } else {
+        free(a);
+        aa = NULL;
+    }
+    a = aa;
+    if (progAppendInstruction(pl, kwPRINT, a, numExps)) {
+        goto err;
+    }
+    return(0);
 err:
-	if (a != NULL) {
-		while (numExps) {
-			numExps--;
-			progDeleteExpression(a[numExps]);
-		}
-		free(a);
-	}
-	return(1);
+    if (a != NULL) {
+        while (numExps) {
+            numExps--;
+            progDeleteExpression(a[numExps]);
+        }
+        free(a);
+    }
+    return(1);
 }
 
 
 static int insREAD(progLineType *pl) {
-	symbolType **aa = NULL;
-	symbolType **a = NULL;
-	symbolType *id = NULL;
-	symbolType *e1 = NULL;
-	symbolType *e2 = NULL;
-	symbolType *s;
-	unsigned long int maxVars = 1024;
-	unsigned long int numVars = 0;
-	if ((a = malloc(sizeof(symbolType *) * maxVars)) == NULL) {
-		goto err;
-	}
-	while (1) {
-		scanNext();
-		s = scanPeek();
-		if (s->id != kwIdentifier) {
-			utilError("expecting identifier");
-			goto err;
-		}
-		if ((id = scanNewSymbol(kwIdentifier, s->value)) == NULL) {
-			goto err;
-		}
-		scanNext();
-		s = scanPeek();
-		if (s->id == kwParenthesesOpen) {
-			if (strchr(id->value, '$') != NULL) {
-				utilError("string variable cannot be subscripted");
-				goto err;
-			}
-			scanNext();
-			if ((e1 = aexp()) == NULL) {
-				utilError("expecting arithmetic expression");
-				goto err;
-			}
-			s = scanPeek();
-			if (s->id == kwComma) {
-				scanNext();
-				if ((e2 = aexp()) == NULL) {
-					utilError("expecting arithmetic expression");
-					goto err;
-				}
-			}
-			s = scanPeek();
-			if (s->id != kwParenthesesClose) {
-				utilError("expecting closing parentheses");
-				goto err;
-			}
-			scanNext();
-			id->l = e1;
-			id->r = e2;
-		}
-		a[numVars++] = id;
-		id = NULL;
-		e1 = NULL;
-		e2 = NULL;
-		s = scanPeek();
-		if (s->id != kwComma) {
-			break;
-		}
-		if (numVars == maxVars) {
-			maxVars <<= 1;
-			if ((aa = realloc(a, sizeof(symbolType *) * maxVars)) == NULL) {
-				utilError("couldn't allocate memory");
-				goto err;
-			}
-			a = aa;
-		}
-	}
-	if ((aa = realloc(a, sizeof(symbolType *) * numVars)) == NULL) {
-		utilError("couldn't allocate memory");
-		goto err;
-	}
-	a = aa;
-	if (progAppendInstruction(pl, kwREAD, a, numVars)) {
-		goto err;
-	}
-	return(0);
+    symbolType **aa = NULL;
+    symbolType **a = NULL;
+    symbolType *id = NULL;
+    symbolType *e1 = NULL;
+    symbolType *e2 = NULL;
+    symbolType *s;
+    unsigned long int maxVars = 1024;
+    unsigned long int numVars = 0;
+    if ((a = malloc(sizeof(symbolType *) * maxVars)) == NULL) {
+        goto err;
+    }
+    while (1) {
+        scanNext();
+        s = scanPeek();
+        if (s->id != kwIdentifier) {
+            utilError("expecting identifier");
+            goto err;
+        }
+        if ((id = scanNewSymbol(kwIdentifier, s->value)) == NULL) {
+            goto err;
+        }
+        scanNext();
+        s = scanPeek();
+        if (s->id == kwParenthesesOpen) {
+            /*
+             * <avar> | <string id> only (BNF). "String variables used in READ
+             * statements must be dimensioned and cannot be subscripted ...
+             * Neither may array variables be used", where an array variable
+             * is "the whole array or any element" (Manual, READ and section 1)
+             */
+            utilError("READ takes only unsubscripted variables");
+            goto err;
+        }
+        a[numVars++] = id;
+        id = NULL;
+        e1 = NULL;
+        e2 = NULL;
+        s = scanPeek();
+        if (s->id != kwComma) {
+            break;
+        }
+        if (numVars == maxVars) {
+            maxVars <<= 1;
+            if ((aa = realloc(a, sizeof(symbolType *) * maxVars)) == NULL) {
+                utilError("couldn't allocate memory");
+                goto err;
+            }
+            a = aa;
+        }
+    }
+    if ((aa = realloc(a, sizeof(symbolType *) * numVars)) == NULL) {
+        utilError("couldn't allocate memory");
+        goto err;
+    }
+    a = aa;
+    if (progAppendInstruction(pl, kwREAD, a, numVars)) {
+        goto err;
+    }
+    return(0);
 err:
-	if (a != NULL) {
-		while (numVars) {
-			numVars--;
-			progDeleteExpression(a[numVars]->l);
-			progDeleteExpression(a[numVars]->r);
-			free(a[numVars]);
-		}
-		free(a);
-	}
-	if (id != NULL) {
-		progDeleteExpression(id);
-	}
-	if (e1 != NULL) {
-		progDeleteExpression(e1);
-	}
-	if (e2 != NULL) {
-		progDeleteExpression(e2);
-	}
-	return(1);
+    if (a != NULL) {
+        while (numVars) {
+            numVars--;
+            progDeleteExpression(a[numVars]->l);
+            progDeleteExpression(a[numVars]->r);
+            free(a[numVars]);
+        }
+        free(a);
+    }
+    if (id != NULL) {
+        progDeleteExpression(id);
+    }
+    if (e1 != NULL) {
+        progDeleteExpression(e1);
+    }
+    if (e2 != NULL) {
+        progDeleteExpression(e2);
+    }
+    return(1);
 }
 
 
 static int insREM(progLineType *pl) {
-	symbolType *s = scanGetText();
-	char *t = strdup(s->value);
-	if (t == NULL) {
-		utilError("couldn't allocate memory");
-		return(1);
-	}
-	scanNext();
-	return(progAppendInstruction(pl, kwREM, t));
+    symbolType *s = scanGetText();
+    char *t;
+    if (s == NULL) {
+        return(1);
+    }
+    if ((t = strdup(s->value)) == NULL) {
+        utilError("couldn't allocate memory");
+        return(1);
+    }
+    scanNext();
+    return(progAppendInstruction(pl, kwREM, t));
 }
 
 
 static int insRESTORE(progLineType *pl) {
-	symbolType *s;
-	symbolType *e = NULL;
-	scanNext();
-	s = scanPeek();
-	if (s->id != kwEol) {
-		if ((e = aexp()) == NULL) {
-			goto err;
-		}
-	}
-	if (progAppendInstruction(pl, kwRESTORE, e)) {
-		goto err;
-	}
-	scanNext();
-	return(0);
+    symbolType *s;
+    symbolType *e = NULL;
+    scanNext();
+    s = scanPeek();
+    if (!endOfStatement(s)) {
+        if ((e = aexp()) == NULL) {
+            goto err;
+        }
+    }
+    if (progAppendInstruction(pl, kwRESTORE, e)) {
+        goto err;
+    }
+    return(0);
 err:
-	if (e != NULL) {
-		progDeleteExpression(e);
-	}
-	scanNext();
-	return(1);
+    if (e != NULL) {
+        progDeleteExpression(e);
+    }
+    return(1);
 }
 
 
 static int insRETURN(progLineType *pl) {
-	scanNext();
-	return(progAppendInstruction(pl, kwRETURN, NULL));
+    scanNext();
+    return(progAppendInstruction(pl, kwRETURN, NULL));
 }
 
 
 static int insRUN(progLineType *pl) {
-	scanNext();
-	return(progAppendInstruction(pl, kwRUN, NULL));
+    scanNext();
+    return(progAppendInstruction(pl, kwRUN, NULL));
 }
 
 
 static int insSAVE(progLineType *pl) {
-	symbolType *s = NULL;
-	scanNext();
-	if ((s = sexp()) == NULL) {
-		utilError("expecting string expression");
-		goto err;
-	}
-	if (progAppendInstruction(pl, kwSAVE, s)) {
-		goto err;
-	}
-	scanNext();
-	return(0);
+    symbolType *s = NULL;
+    scanNext();
+    if ((s = sexp()) == NULL) {
+        utilError("expecting string expression");
+        goto err;
+    }
+    if (progAppendInstruction(pl, kwSAVE, s)) {
+        goto err;
+    }
+    return(0);
 err:
-	if (s != NULL) {
-		progDeleteExpression(s);
-	}
-	return(1);
+    if (s != NULL) {
+        progDeleteExpression(s);
+    }
+    return(1);
 }
 
 
 static int insSTOP(progLineType *pl) {
-	scanNext();
-	return(progAppendInstruction(pl, kwSTOP, NULL));
+    scanNext();
+    return(progAppendInstruction(pl, kwSTOP, NULL));
 }
 
 
 static int insTRAP(progLineType *pl) {
-	symbolType *s = NULL;
-	scanNext();
-	if ((s = aexp()) == NULL) {
-		utilError("expected aexp");
-		goto err;
-	}
-	if (progAppendInstruction(pl, kwTRAP, s)) {
-		goto err;
-	}
-	scanNext();
-	return(0);
+    symbolType *s = NULL;
+    scanNext();
+    if ((s = aexp()) == NULL) {
+        utilError("expected aexp");
+        goto err;
+    }
+    if (progAppendInstruction(pl, kwTRAP, s)) {
+        goto err;
+    }
+    return(0);
 err:
-	return(1);
+    progDeleteExpression(s);
+    return(1);
 }
 
 
 static int statement(progLineType *pl) {
-	symbolType *s = scanPeek();
-	int rc = 0;
+    symbolType *s = scanPeek();
+    int rc = 0;
     switch (s->id) {
+        case kwBYE:
+            rc = insBYE(pl);
+            break;
         case kwCLR:
             rc = insCLR(pl);
             break;
         case kwCLS:
             rc = insCLS(pl);
             break;
-		case kwCONT:
-			rc = insCONT(pl);
-			break;
+        case kwCONT:
+            rc = insCONT(pl);
+            break;
         case kwDATA:
             rc = insDATA(pl);
+            break;
+        case kwDEG:
+            rc = insDEG(pl);
+            break;
+        case kwRAD:
+            rc = insRAD(pl);
             break;
         case kwDIM:
             rc = insDIM(pl);
@@ -1489,15 +1474,15 @@ static int statement(progLineType *pl) {
         case kwLIST:
             rc = insLIST(pl);
             break;
-		case kwLOAD:
-			rc = insLOAD(pl);
-			break;
+        case kwLOAD:
+            rc = insLOAD(pl);
+            break;
         case kwNEXT:
             rc = insNEXT(pl);
             break;
-		case kwNEW:
-			rc = insNEW(pl);
-			break;
+        case kwNEW:
+            rc = insNEW(pl);
+            break;
         case kwON:
             rc = insON(pl);
             break;
@@ -1519,102 +1504,188 @@ static int statement(progLineType *pl) {
         case kwRETURN:
             rc = insRETURN(pl);
             break;
-		case kwRUN:
-			rc = insRUN(pl);
-			break;
-		case kwSAVE:
-			rc = insSAVE(pl);
-			break;
+        case kwRUN:
+            rc = insRUN(pl);
+            break;
+        case kwSAVE:
+            rc = insSAVE(pl);
+            break;
         case kwSTOP:
             rc = insSTOP(pl);
             break;
         case kwTRAP:
             rc = insTRAP(pl);
             break;
-		case kwIdentifier:
-			rc = insAssignment(pl);
-			break;
+        case kwIdentifier:
+            if (!strcasecmp(s->value, "go")) {
+                /* GO TO is another way to write GOTO; insGOTO skips the TO */
+                scanNext();
+                if (scanPeek()->id != kwTO) {
+                    utilError("expecting TO after GO");
+                    rc = 1;
+                    break;
+                }
+                rc = insGOTO(pl);
+                break;
+            }
+            rc = insAssignment(pl);
+            break;
         default:
             rc = 1;
-            utilError("unrecognized statement: %s", s->value);
+            utilError("unrecognized statement: %s", scanDescribe(s));
     }
-	return(rc);
+    return(rc);
+}
+
+
+/*
+ * Does this token end a statement? Every statement leaves the token after its
+ * last argument current, and that must be one of these.
+ */
+static int endOfStatement(symbolType *s) {
+    return(s->id == kwColon || s->id == kwEol || s->id == kwEof);
 }
 
 
 static int compoundStatement(progLineType *pl) {
     symbolType *s;
-	while (1) {
-		s = scanPeek();
-		if (s->id <= kwTRAP || s->id == kwIdentifier) {
-			if (statement(pl)) {
-				return(1);
-			}
-			s = scanPeek();
-		} else if (s->id == kwEol || s->id == kwEof) {
-			return(0);
-		} else if (s->id == kwColon) {
-			scanNext();
-		} else {
-			utilError("unexpected input: %s", s->value);
-			return(1);
-		}
-	}
+    while (1) {
+        s = scanPeek();
+        if (s->id <= kwTRAP || s->id == kwIdentifier) {
+            /*
+             * Any error reported while parsing the statement fails it, even if
+             * the statement's own code carried on (PRINT (1 + 2 used to be
+             * stored as a bare PRINT after reporting the missing ')').
+             */
+            if (statement(pl) || utilErrorReported()) {
+                return(1);
+            }
+            /* statements are separated by ':' (GOTO 10 PRINT 1 is an error) */
+            s = scanPeek();
+            if (!endOfStatement(s)) {
+                utilError("unexpected %s after statement", scanDescribe(s));
+                return(1);
+            }
+        } else if (s->id == kwEol || s->id == kwEof) {
+            return(0);
+        } else if (s->id == kwColon) {
+            scanNext();
+        } else {
+            utilError("unexpected %s", scanDescribe(s));
+            return(1);
+        }
+    }
+}
+
+
+/*
+ * After a syntax error, show the line with a caret under the token where the
+ * error was found (column, from scanTokenColumn() at the time of the error;
+ * the rest of the line must already have been read).
+ */
+static void showSyntaxError(long column) {
+    const char *text;
+    size_t len;
+    size_t i;
+    if (!utilErrorReported()) {
+        utilError("syntax error");
+    }
+    text = ioLineText(&len);
+    if (text == NULL || column < 0) {
+        return;
+    }
+    while (len > 0 && (text[len - 1] == '\n' || text[len - 1] == '\r')) {
+        len--;
+    }
+    fflush(stdout);
+    fprintf(stderr, "  %.*s\n  ", (int)len, text);
+    /* keep tabs, so the caret lines up however tabs are displayed */
+    for (i = 0; i < (size_t)column && i < len; i++) {
+        fputc(text[i] == '\t' ? '\t' : ' ', stderr);
+    }
+    fputs("^\n", stderr);
 }
 
 
 static void deferredStatement(void) {
-	symbolType *s = scanPeek();
-	progLineType *pl = progInsertLine(atoi(s->value));
-	scanNext();
-	if (pl == NULL) {
-		utilError("couldn't allocate memory");
-		return;
-	}
-	if (compoundStatement(pl)) {
-		progDeleteLine(pl);
-	}
-	scanConsumeEol();
+    symbolType *s = scanPeek();
+    long int lineNum = atol(s->value);
+    progLineType pl;
+    progLineType *p;
+    /* parse into a scratch line first, so a syntax error doesn't lose the old line */
+    memset(&pl, 0, sizeof(progLineType));
+    pl.lineNum = lineNum;
+    if (strchr(s->value, '.') != NULL || strchr(s->value, 'e') != NULL || strchr(s->value, 'E') != NULL || lineNum > MAX_LINE_NUMBER) {
+        long column = scanTokenColumn();
+        utilError("line numbers must be whole numbers from 0 to %ld", MAX_LINE_NUMBER);
+        scanSkipLine();
+        showSyntaxError(column);
+        scanConsumeEol();
+        return;
+    }
+    /* syntax errors in this line say "at line N" */
+    utilErrorLine(lineNum);
+    scanNext();
+    if (compoundStatement(&pl)) {
+        long column = scanTokenColumn();
+        progDeleteInstructions(pl.firstInstruction);
+        scanSkipLine();
+        showSyntaxError(column);
+    } else if (pl.firstInstruction == NULL) {
+        /* a line number on its own deletes the line */
+        progRemoveLine(lineNum);
+    } else if ((p = progInsertLine(lineNum)) == NULL) {
+        utilError("couldn't allocate memory");
+        progDeleteInstructions(pl.firstInstruction);
+    } else {
+        p->firstInstruction = pl.firstInstruction;
+        p->lastInstruction = pl.lastInstruction;
+    }
+    scanConsumeEol();
 }
 
 
 static void immediateStatement(void) {
-	progLineType pl;
-	memset(&pl, 0, sizeof(progLineType));
-	pl.lineNum = -1;
-	if (compoundStatement(&pl)) {
-		progDeleteInstructions(pl.firstInstruction);
-		goto err;
-	}
-	progExecuteLine(&pl);
-	progDeleteInstructions(pl.firstInstruction);
+    progLineType pl;
+    memset(&pl, 0, sizeof(progLineType));
+    pl.lineNum = -1;
+    if (compoundStatement(&pl)) {
+        long column = scanTokenColumn();
+        progDeleteInstructions(pl.firstInstruction);
+        /* don't run what's left of the line as a new statement */
+        scanSkipLine();
+        showSyntaxError(column);
+        goto err;
+    }
+    progExecuteLine(&pl);
+    progDeleteInstructions(pl.firstInstruction);
 err:
-	utilReady();
-	scanConsumeEol();
+    utilReady();
+    scanConsumeEol();
 }
 
 
 void parseProgram(void) {
-	symbolType *s = NULL;
-	scanNext();
-	while (1) {
-		s = scanPeek();
+    symbolType *s = NULL;
+    scanNext();
+    while (1) {
+        s = scanPeek();
         switch (s->id) {
             case kwBYE:
             case kwEof:
                 goto term;
                 break;
-			case kwEol:
-				scanConsumeEol();
-				break;
+            case kwEol:
+                scanConsumeEol();
+                break;
             case kwNumeric:
                 deferredStatement();
                 break;
-			default:
-				immediateStatement();
-				break;
+            default:
+                immediateStatement();
+                break;
         }
-	}
+    }
 term:
-	return;
+    return;
 }

@@ -10,11 +10,11 @@
 100 if d >= 8 then 160
 110 if d >= 4 then 150
 120 if d >= 2 then 140
-130 print "*"; 
-140 print "*"; 
-150 print "*"; 
-160 print "*"; 
-170 print "*"; 
-180 print "*"; 
+130 print "*";
+140 print "*";
+150 print "*";
+160 print "*";
+170 print "*";
+180 print "*";
 190 print "*" : goto 30
 200 print "Quitter!!! Answer was "; n

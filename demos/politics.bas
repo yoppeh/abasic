@@ -1,3 +1,4 @@
+5 dim P$(80), K$(80)
 10 cls
 15 print "             POLITICS"
 20 print "BY JEFF PARKES"
@@ -9,8 +10,8 @@
 47 print "PRESS [ENTER] TO BEGIN...";  : input enter
 50 cls : print "BUDGET: $"; B : if B <= 0 then 500
 55 T = T + 1 : if T > 10 then 300
-60 X = int(rnd(1) * 22) + 1 : 
-65 for I = 1 to X : read P$,C : next I
+60 X = int(rnd(1) * 22) + 1 :
+65 restore : for I = 1 to X : read P$,C : next I
 70 print  : print P$ : print  : print "ESTIMATED COST: $"; C
 75 print  : print "DO YOU WANT TO SPEND THE MONEY [y/n]: ";  : input K$
 77 if K$ = "y" then 100
@@ -46,7 +47,7 @@
 520 print "YOU REALLY SCREWED UP THIS TIME!" : goto 606
 600 print  : print "YOU HAVE $"; B; " LEFT"
 605 if B > 0 then print "PLAY AGAIN (Y/N/G)";  : goto 610
-606 print "PLAY AGAIN [y]/[n]: "; 
+606 print "PLAY AGAIN [y]/[n]: ";
 610 input K$ : if K$ = "y" then cls : goto 45
 620 if K$ = "g" and B > 0 then 650
 630 if K$ = "n" then print "Thanks for playing!" : end

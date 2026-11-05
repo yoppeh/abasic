@@ -6,10 +6,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "io.h"
 #include "scan.h"
 #include "util.h"
+
+
+/*
+ * LOCAL CONSTANTS
+ */
+
+/* "Variable names may be up to 120 characters long" (Manual, section 1) */
+#define MAX_NAME_LEN 120
 
 
 /*
@@ -18,59 +27,94 @@
 
 static symbolType *keywordTree = NULL;
 static symbolType keywordTable[] = {
-	{NULL, NULL, "and", kwAND},
-	{NULL, NULL, "or", kwOR},
-	{NULL, NULL, "not", kwNOT},
-	{NULL, NULL, "bye", kwBYE},
-	{NULL, NULL, "clr", kwCLR},
-	{NULL, NULL, "cls", kwCLS},
-	{NULL, NULL, "cont", kwCONT},
-	{NULL, NULL, "data", kwDATA},
-	{NULL, NULL, "dim", kwDIM},
-	{NULL, NULL, "end", kwEND},
-	{NULL, NULL, "for", kwFOR},
-	{NULL, NULL, "to", kwTO},
-	{NULL, NULL, "step", kwSTEP},
-	{NULL, NULL, "gosub", kwGOSUB},
-	{NULL, NULL, "goto", kwGOTO},
-	{NULL, NULL, "if", kwIF},
-	{NULL, NULL, "then", kwTHEN},
-	{NULL, NULL, "input", kwINPUT},
-	{NULL, NULL, "let", kwLET},
-	{NULL, NULL, "list", kwLIST},
-	{NULL, NULL, "load", kwLOAD},
-	{NULL, NULL, "new", kwNEW},
-	{NULL, NULL, "next", kwNEXT},
-	{NULL, NULL, "on", kwON},
-	{NULL, NULL, "pop", kwPOP},
-	{NULL, NULL, "print", kwPRINT},
-	{NULL, NULL, "read", kwREAD},
-	{NULL, NULL, "rem", kwREM},
-	{NULL, NULL, "restore", kwRESTORE},
-	{NULL, NULL, "return", kwRETURN},
-	{NULL, NULL, "run", kwRUN},
-	{NULL, NULL, "save", kwSAVE},
-	{NULL, NULL, "stop", kwSTOP},
-	{NULL, NULL, "trap", kwTRAP},
-	{NULL, NULL, "abs", kwABS},
-	{NULL, NULL, "asc", kwASC},
-	{NULL, NULL, "atn", kwATN},
-	{NULL, NULL, "clog", kwCLOG},
-	{NULL, NULL, "cos", kwCOS},
-	{NULL, NULL, "exp", kwEXP},
-	{NULL, NULL, "int", kwINT},
-	{NULL, NULL, "len", kwLEN},
-	{NULL, NULL, "log", kwLOG},
-	{NULL, NULL, "rnd", kwRND},
-	{NULL, NULL, "sgn", kwSGN},
-	{NULL, NULL, "sin", kwSIN},
-	{NULL, NULL, "sqr", kwSQR},
-	{NULL, NULL, "val", kwVAL},
-	{NULL, NULL, "chr$", kwCHR},
-	{NULL, NULL, "str$", kwSTR}
+    {NULL, NULL, "and", kwAND},
+    {NULL, NULL, "or", kwOR},
+    {NULL, NULL, "not", kwNOT},
+    {NULL, NULL, "bye", kwBYE},
+    {NULL, NULL, "clr", kwCLR},
+    {NULL, NULL, "cls", kwCLS},
+    {NULL, NULL, "cont", kwCONT},
+    {NULL, NULL, "data", kwDATA},
+    {NULL, NULL, "deg", kwDEG},
+    {NULL, NULL, "dim", kwDIM},
+    {NULL, NULL, "end", kwEND},
+    {NULL, NULL, "for", kwFOR},
+    {NULL, NULL, "to", kwTO},
+    {NULL, NULL, "step", kwSTEP},
+    {NULL, NULL, "gosub", kwGOSUB},
+    {NULL, NULL, "goto", kwGOTO},
+    {NULL, NULL, "if", kwIF},
+    {NULL, NULL, "then", kwTHEN},
+    {NULL, NULL, "input", kwINPUT},
+    {NULL, NULL, "let", kwLET},
+    {NULL, NULL, "list", kwLIST},
+    {NULL, NULL, "load", kwLOAD},
+    {NULL, NULL, "new", kwNEW},
+    {NULL, NULL, "next", kwNEXT},
+    {NULL, NULL, "on", kwON},
+    {NULL, NULL, "pop", kwPOP},
+    {NULL, NULL, "print", kwPRINT},
+    {NULL, NULL, "rad", kwRAD},
+    {NULL, NULL, "read", kwREAD},
+    {NULL, NULL, "rem", kwREM},
+    {NULL, NULL, "restore", kwRESTORE},
+    {NULL, NULL, "return", kwRETURN},
+    {NULL, NULL, "run", kwRUN},
+    {NULL, NULL, "save", kwSAVE},
+    {NULL, NULL, "stop", kwSTOP},
+    {NULL, NULL, "trap", kwTRAP},
+    {NULL, NULL, "abs", kwABS},
+    {NULL, NULL, "asc", kwASC},
+    {NULL, NULL, "atn", kwATN},
+    {NULL, NULL, "clog", kwCLOG},
+    {NULL, NULL, "cos", kwCOS},
+    {NULL, NULL, "exp", kwEXP},
+    {NULL, NULL, "int", kwINT},
+    {NULL, NULL, "len", kwLEN},
+    {NULL, NULL, "log", kwLOG},
+    {NULL, NULL, "rnd", kwRND},
+    {NULL, NULL, "sgn", kwSGN},
+    {NULL, NULL, "sin", kwSIN},
+    {NULL, NULL, "sqr", kwSQR},
+    {NULL, NULL, "val", kwVAL},
+    {NULL, NULL, "chr$", kwCHR},
+    {NULL, NULL, "str$", kwSTR},
+    {NULL, NULL, "erl", kwERL},
+    {NULL, NULL, "err$", kwERR},
+    {NULL, NULL, "peek", kwPEEK}
 };
 static symbolType *scanCurrent = NULL;
 static symbolType *idToKeywordTable[kwNumKeywords];
+/* where the current token starts in its input line, for error messages */
+static long tokenColumn = -1;
+
+/*
+ * Atari BASIC's statement table, in its order. An abbreviation (PR. for
+ * PRINT) means the first statement here that starts with it, which gives
+ * exactly the abbreviations in the BNF: R. is REM, REA. READ, CL. CLOSE, E.
+ * ENTER. Hardware and I/O statements this interpreter doesn't have are kept
+ * (id -1) so their abbreviations aren't taken by something else. CLS isn't an
+ * Atari statement, so it goes last.
+ */
+static const struct {
+    const char *name;
+    int id;
+} statementTable[] = {
+    {"rem", kwREM}, {"data", kwDATA}, {"input", kwINPUT}, {"color", -1},
+    {"list", kwLIST}, {"enter", -1}, {"let", kwLET}, {"if", kwIF},
+    {"for", kwFOR}, {"next", kwNEXT}, {"goto", kwGOTO}, {"gosub", kwGOSUB},
+    {"trap", kwTRAP}, {"bye", kwBYE}, {"cont", kwCONT}, {"com", -1},
+    {"close", -1}, {"clr", kwCLR}, {"deg", kwDEG}, {"dim", kwDIM},
+    {"end", kwEND}, {"new", kwNEW}, {"open", -1}, {"load", kwLOAD},
+    {"save", kwSAVE}, {"status", -1}, {"note", -1}, {"point", -1},
+    {"xio", -1}, {"on", kwON}, {"poke", -1}, {"print", kwPRINT},
+    {"rad", kwRAD}, {"read", kwREAD}, {"restore", kwRESTORE},
+    {"return", kwRETURN}, {"run", kwRUN}, {"stop", kwSTOP}, {"pop", kwPOP},
+    {"get", -1}, {"put", -1}, {"graphics", -1}, {"plot", -1},
+    {"position", -1}, {"dos", -1}, {"drawto", -1}, {"setcolor", -1},
+    {"locate", -1}, {"sound", -1}, {"lprint", -1}, {"csave", -1},
+    {"cload", -1}, {"cls", kwCLS}
+};
 
 
 /*
@@ -85,243 +129,363 @@ static char *scanGetString(void);
 static symbolType *insertSymbol(symbolType *p, long s, long e);
 static int isop(char c);
 static int lookup(symbolType *t, char *s);
+static int lookupAbbreviation(const char *s);
 static void scanExit(void);
 static void skipWhite(void);
 
 
 static int cmpKeywords(const void *a, const void *b) {
-	return(strcmp(((symbolType *)a)->value, ((symbolType *)b)->value));
+    return(strcmp(((symbolType *)a)->value, ((symbolType *)b)->value));
 }
 
 
 static symbolType *insertSymbol(symbolType *p, long s, long e) {
-	if (s > e) {
-		return(NULL);
-	}
-	long m = (s + e) / 2;
-	symbolType *root = &p[m];
-	root->l = insertSymbol(p, s, m - 1);
-	root->r = insertSymbol(p, m + 1, e);
-	return(root);
+    if (s > e) {
+        return(NULL);
+    }
+    long m = (s + e) / 2;
+    symbolType *root = &p[m];
+    root->l = insertSymbol(p, s, m - 1);
+    root->r = insertSymbol(p, m + 1, e);
+    return(root);
 }
 
 
 static int isop(char c) {
-	return(c == '+' || c == '-' || c == '*' || c == '/' || c == '^');
+    return(c == '+' || c == '-' || c == '*' || c == '/' || c == '^');
 }
 
 
 static int islop(char c) {
-	return(c == '<' || c == '>' || c == '=');
+    return(c == '<' || c == '>' || c == '=');
 }
 
 
 static int lookup(symbolType *t, char *s) {
-	if (s == NULL) {
-		return(-1);
-	}
-	int i;
-	while (t != NULL) {
-		i = strcasecmp(t->value, s);
-		if (i == 0) {
-			break;
-		} else if (i < 0) {
-			t = t->r;
-		} else {
-			t = t->l;
-		}
-	}
-	if (t != NULL) {
-		return(t->id);
-	}
-	return(-1);
+    if (s == NULL) {
+        return(-1);
+    }
+    int i;
+    while (t != NULL) {
+        i = strcasecmp(t->value, s);
+        if (i == 0) {
+            break;
+        } else if (i < 0) {
+            t = t->r;
+        } else {
+            t = t->l;
+        }
+    }
+    if (t != NULL) {
+        return(t->id);
+    }
+    return(-1);
+}
+
+
+/*
+ * The statement keyword that abbreviation s (without its period) stands for.
+ * Reports an error and returns -1 if there is none, or if it is an Atari
+ * statement this interpreter doesn't have.
+ */
+static int lookupAbbreviation(const char *s) {
+    size_t i;
+    size_t len = strlen(s);
+    for (i = 0; i < sizeof(statementTable) / sizeof(statementTable[0]); i++) {
+        if (!strncasecmp(statementTable[i].name, s, len)) {
+            if (statementTable[i].id == -1) {
+                utilError("%s. is %s, which this BASIC doesn't have", s, statementTable[i].name);
+            }
+            return(statementTable[i].id);
+        }
+    }
+    utilError("unknown abbreviation '%s.'", s);
+    return(-1);
+}
+
+
+long scanTokenColumn(void) {
+    return(tokenColumn);
 }
 
 
 int scanConsumeEol(void) {
-	ioNext();
-	return(scanNext());
+    /* a new line starts here, so it may report its own error */
+    utilErrorReset();
+    ioNext();
+    return(scanNext());
+}
+
+
+const char *scanDescribe(symbolType *s) {
+    static char text[64];
+    const char *t = NULL;
+    switch (s->id) {
+        case kwEol:
+            return("end of line");
+        case kwEof:
+            return("end of input");
+        case kwColon:
+            t = ":";
+            break;
+        case kwSemicolon:
+            t = ";";
+            break;
+        case kwComma:
+            t = ",";
+            break;
+        case kwParenthesesOpen:
+            t = "(";
+            break;
+        case kwParenthesesClose:
+            t = ")";
+            break;
+        case kwOpAdd:
+            t = "+";
+            break;
+        case kwOpSub:
+            t = "-";
+            break;
+        case kwOpMul:
+            t = "*";
+            break;
+        case kwOpDiv:
+            t = "/";
+            break;
+        case kwOpExp:
+            t = "^";
+            break;
+        case kwLogicalLT:
+            t = "<";
+            break;
+        case kwLogicalLTE:
+            t = "<=";
+            break;
+        case kwLogicalEQ:
+            t = "=";
+            break;
+        case kwLogicalNE:
+            t = "<>";
+            break;
+        case kwLogicalGT:
+            t = ">";
+            break;
+        case kwLogicalGTE:
+            t = ">=";
+            break;
+        case kwString:
+            snprintf(text, sizeof(text), "\"%s\"", s->value);
+            return(text);
+        default:
+            if (s->id < kwNumKeywords) {
+                t = scanGetKeyword(s->id);
+            } else if (s->value != NULL && s->value[0] != 0) {
+                t = s->value;
+            } else {
+                return("input");
+            }
+            break;
+    }
+    snprintf(text, sizeof(text), "'%s'", t);
+    return(text);
 }
 
 
 char *scanGetKeyword(keywords k) {
-	if (k >= kwNumKeywords) {
-		return(NULL);
-	}
-	return(idToKeywordTable[k]->value);
+    if (k >= kwNumKeywords) {
+        return(NULL);
+    }
+    return(idToKeywordTable[k]->value);
 }
 
 
 static char *scanGetLOp(void) {
-	char *s = malloc(3);
-	char *t = s;
-	switch (ioPeek()) {
-		case '<':
-			*t++ = '<';
-			ioNext();
-			if (ioPeek() == '=' || ioPeek() == '>') {
-				*t++ = ioPeek();
-				ioNext();
-			}
-			*t = 0;
-			skipWhite();
-			return(s);
-		case '>':
-			*t++ = '>';
-			ioNext();
-			if (ioPeek() == '=') {
-				*t++ = ioPeek();
-				ioNext();
-			}
-			*t = 0;
-			skipWhite();
-			return(s);
-		case '=':
-			*t++ = '=';
-			*t = 0;
-			ioNext();
-			skipWhite();
-			return(s);
-	}
-	if (s) {
-		free(s);
-	}
-	return(NULL);
+    char *s = malloc(3);
+    char *t = s;
+    if (s == NULL) {
+        aborts("memory allocation error");
+    }
+    switch (ioPeek()) {
+        case '<':
+            *t++ = '<';
+            ioNext();
+            if (ioPeek() == '=' || ioPeek() == '>') {
+                *t++ = ioPeek();
+                ioNext();
+            }
+            *t = 0;
+            skipWhite();
+            return(s);
+        case '>':
+            *t++ = '>';
+            ioNext();
+            if (ioPeek() == '=') {
+                *t++ = ioPeek();
+                ioNext();
+            }
+            *t = 0;
+            skipWhite();
+            return(s);
+        case '=':
+            *t++ = '=';
+            *t = 0;
+            ioNext();
+            skipWhite();
+            return(s);
+    }
+    if (s) {
+        free(s);
+    }
+    return(NULL);
 }
 
 
 static char *scanGetName(void) {
-	char *s = malloc(maxStringLen + 1);
-	char *t = s;
-	int i = maxStringLen;
-	if (s == NULL) {
-		aborts("memory allocation error");
-	}
-	if (!isalpha(ioPeek())) {
-		utilError("expected alphabetic character\n");
-		free(s);
-		return(NULL);
-	}
-	while (i > 0 && (isalnum(ioPeek()) || ioPeek() == '$')) {
-		*t++ = ioPeek();
-		ioNext();
-		i--;
-	}
-	if (i < 0) {
-		utilError("string exceeds maximum length of %i\n", maxStringLen);
-		free(s);
-		return(NULL);
-	}
-	*t = 0;
-	skipWhite();
-	return(s);
+    char *s = malloc(maxStringLen + 1);
+    char *t = s;
+    int i = maxStringLen;
+    if (s == NULL) {
+        aborts("memory allocation error");
+    }
+    if (!isalpha((unsigned char)ioPeek())) {
+        utilError("expected alphabetic character");
+        free(s);
+        return(NULL);
+    }
+    /* the buffer holds maxStringLen + 1 bytes, so i reaching -1 means too long */
+    while (i >= 0 && (isalnum((unsigned char)ioPeek()) || ioPeek() == '$')) {
+        *t++ = ioPeek();
+        ioNext();
+        i--;
+    }
+    if (i < 0) {
+        utilError("name exceeds maximum length of %i", maxStringLen);
+        free(s);
+        return(NULL);
+    }
+    *t = 0;
+    skipWhite();
+    return(s);
 }
 
 
 static char *scanGetNum(void) {
-	char *s = malloc(maxStringLen + 1);
-	char *t = s;
-	int i = maxStringLen;
-	if (!isdigit(ioPeek())) {
-		utilError("expected digit");
-		return(NULL);
-	}
-	while (i >= 0 && (isdigit(ioPeek()) || ioPeek() == '.')) {
-		*t++ = ioPeek();
-		ioNext();
-		i--;
-	}
-	if (i < 0) {
-		utilError("string exceeds maximum length of %i", maxStringLen);
-		free(s);
-		return(NULL);
-	}
-	*t = 0;
-	skipWhite();
-	return(s);
+    char *s = malloc(maxStringLen + 1);
+    char *t = s;
+    int i = maxStringLen;
+    if (s == NULL) {
+        aborts("memory allocation error");
+    }
+    if (!isdigit((unsigned char)ioPeek()) && ioPeek() != '.') {
+        utilError("expected digit");
+        free(s);
+        return(NULL);
+    }
+    int digits = 0;
+    while (i >= 0 && (isdigit((unsigned char)ioPeek()) || ioPeek() == '.')) {
+        digits += isdigit((unsigned char)ioPeek()) != 0;
+        *t++ = ioPeek();
+        ioNext();
+        i--;
+    }
+    /* optional exponent (E, an optional sign, digits), only after a digit, so ". END" stays a REM */
+    if (digits > 0 && i >= 0 && (ioPeek() == 'e' || ioPeek() == 'E')) {
+        *t++ = ioPeek();
+        ioNext();
+        i--;
+        if (i >= 0 && (ioPeek() == '+' || ioPeek() == '-')) {
+            *t++ = ioPeek();
+            ioNext();
+            i--;
+        }
+        while (i >= 0 && isdigit((unsigned char)ioPeek())) {
+            *t++ = ioPeek();
+            ioNext();
+            i--;
+        }
+    }
+    if (i < 0) {
+        utilError("string exceeds maximum length of %i", maxStringLen);
+        free(s);
+        return(NULL);
+    }
+    *t = 0;
+    skipWhite();
+    return(s);
 }
 
 
 static char *scanGetOp(void) {
-	char *s = malloc(maxStringLen + 1);
-	char *t = s;
-	int i = maxStringLen;
-	if (s == NULL) {
-		aborts("memory allocation error");
-	}
-	if (!isop(ioPeek())) {
-		utilError("expected operator");
-		free(s);
-		return(NULL);
-	}
-	while (i >= 0 && isop(ioPeek())) {
-		*t++ = ioPeek();
-		ioNext();
-		i--;
-	}
-	if (i < 0) {
-		utilError("string exceeds maximum length of %i", maxStringLen);
-		free(s);
-		return(NULL);
-	}
-	*t = 0;
-	skipWhite();
-	return(s);
+    char *s = malloc(2);
+    char *t = s;
+    if (s == NULL) {
+        aborts("memory allocation error");
+    }
+    if (!isop(ioPeek())) {
+        utilError("expected operator");
+        free(s);
+        return(NULL);
+    }
+    /* one character only, so 2*-3 is '*' then '-' */
+    *t++ = ioPeek();
+    ioNext();
+    *t = 0;
+    skipWhite();
+    return(s);
 }
 
 
 static char *scanGetString(void) {
-	char *s = malloc(maxStringLen + 1);
-	char *t = s;
-	int i = maxStringLen;
-	if (s == NULL) {
-		utilError("memory allocation error");
-		return(NULL);
-	}
-	if (ioPeek() != '"') {
-		utilError("expected quote");
-		free(s);
-		return(NULL);
-	}
-	ioNext();
-	while (i >= 0 && ioPeek() != '"' && ioPeek() != '\n' && ioPeek() != IO_EOF) {
-		*t++ = ioPeek();
-		ioNext();
-		i--;
-	}
-	if (i < 0) {
-		utilError("string exceeds maximum length of %i\n", maxStringLen);
-		free(s);
-		return(NULL);
-	}
-	if (ioPeek() == '\n' || ioPeek() == IO_EOF) {
-		utilError("unterminated string\n");
-		free(s);
-		return(NULL);
-	}
-	*t = 0;
-	ioNext();
-	skipWhite();
-	return(s);
+    char *s = malloc(maxStringLen + 1);
+    char *t = s;
+    int i = maxStringLen;
+    if (s == NULL) {
+        utilError("memory allocation error");
+        return(NULL);
+    }
+    if (ioPeek() != '"') {
+        utilError("expected quote");
+        free(s);
+        return(NULL);
+    }
+    ioNext();
+    while (i >= 0 && ioPeek() != '"' && ioPeek() != '\n' && ioPeek() != IO_EOF) {
+        *t++ = ioPeek();
+        ioNext();
+        i--;
+    }
+    if (i < 0) {
+        utilError("string exceeds maximum length of %i", maxStringLen);
+        free(s);
+        return(NULL);
+    }
+    /* "the closing quotation can be omitted if it is the last character on a logical line" */
+    if (ioPeek() == '\n' || ioPeek() == IO_EOF) {
+        *t = 0;
+        return(s);
+    }
+    *t = 0;
+    ioNext();
+    skipWhite();
+    return(s);
 }
 
 
 symbolType *scanGetText(void) {
-	char *s = malloc(maxStringLen + 1);
-	char *t = scanCurrent->value;
-	int i = maxStringLen;
-	while (i >= 0 && ioPeek() != '\n' && ioPeek() != IO_EOF) {
-		*t++ = ioPeek();
-		ioNext();
-		i--;
-	}
-	if (i < 0) {
-		utilError("string exceeds maximum length of %i\n", maxStringLen);
-		return(NULL);
-	}
-	*t = 0;
-	scanCurrent->id = kwText;
-	return(scanCurrent);
+    char *t = scanCurrent->value;
+    int i = maxStringLen;
+    while (i >= 0 && ioPeek() != '\n' && ioPeek() != IO_EOF) {
+        *t++ = ioPeek();
+        ioNext();
+        i--;
+    }
+    if (i < 0) {
+        utilError("line exceeds maximum length of %i", maxStringLen);
+        return(NULL);
+    }
+    *t = 0;
+    scanCurrent->id = kwText;
+    return(scanCurrent);
 }
 
 
@@ -333,166 +497,228 @@ static void scanExit(void) {
 
 
 int scanInit(void) {
-	long l = sizeof(keywordTable) / sizeof(symbolType);
-	long i;
-	qsort(keywordTable, l, sizeof(symbolType), cmpKeywords);
-	if ((keywordTree = insertSymbol(keywordTable, 0, l - 1)) == NULL) {
-		return(1);
-	}
-	atexit(scanExit);
+    long n = (long)(sizeof(keywordTable) / sizeof(symbolType));
+    long l = n;
+    long i;
+    qsort(keywordTable, l, sizeof(symbolType), cmpKeywords);
+    if ((keywordTree = insertSymbol(keywordTable, 0, l - 1)) == NULL) {
+        return(1);
+    }
+    atexit(scanExit);
     if ((scanCurrent = malloc(sizeof(symbolType) + maxStringLen + 1)) == NULL) {
         return(1);
     }
-	for (i = 0; i < kwNumKeywords; i++) {
-		for (l = 0; l < sizeof(keywordTable) / sizeof(symbolType); l++) {
-			if (keywordTable[l].id == i) {
-				idToKeywordTable[i] = &keywordTable[l];
-			}
-		}
-	}
+    for (i = 0; i < kwNumKeywords; i++) {
+        for (l = 0; l < n; l++) {
+            if (keywordTable[l].id == i) {
+                idToKeywordTable[i] = &keywordTable[l];
+            }
+        }
+    }
     scanCurrent->l = NULL;
     scanCurrent->r = NULL;
     scanCurrent->value = (char *)scanCurrent + sizeof(symbolType);
     scanCurrent->id = kwEof;
-	return(0);
+    return(0);
 }
 
 
 symbolType *scanNewSymbol(keywords k, char *v) {
-	symbolType *s;
-	int l = 0;
-	if (v != NULL) {
-		l = strlen(v) + 1;
-	}
-	if ((s = malloc(sizeof(symbolType) + l)) == NULL) {
-		utilError("couldn't allocate memory");
-		return(NULL);
-	}
-	s->l = s->r = NULL;
-	s->id = k;
-	s->value = (char *)s + sizeof(symbolType);
-	if (l > 0) {
-		strcpy(s->value, v);
-	} else {
-		s->value = NULL;
-	}
-	return(s);
+    symbolType *s;
+    size_t l = 0;
+    if (v != NULL) {
+        l = strlen(v) + 1;
+    }
+    if ((s = malloc(sizeof(symbolType) + l)) == NULL) {
+        utilError("couldn't allocate memory");
+        return(NULL);
+    }
+    s->l = s->r = NULL;
+    s->id = k;
+    s->value = (char *)s + sizeof(symbolType);
+    if (l > 0) {
+        strcpy(s->value, v);
+    } else {
+        s->value = NULL;
+    }
+    return(s);
 }
 
 
+static int scanToken(void);
+
+
+/*
+ * Read the next token into scanCurrent. If no valid token can be read, the
+ * token is kwUnknown (value: the offending character, if any) rather than
+ * whatever was there before, so the parser reports an error instead of
+ * reusing a stale token.
+ */
 int scanNext(void) {
-	char *s = NULL;
-	int i;
-	skipWhite();
-	if (ioPeek() == IO_EOF) {
+    if (scanToken()) {
+        scanCurrent->id = kwUnknown;
+        return(1);
+    }
+    return(0);
+}
+
+
+void scanSkipLine(void) {
+    while (ioPeek() != '\n' && ioPeek() != IO_EOF) {
+        ioNext();
+    }
+    scanCurrent->id = (ioPeek() == IO_EOF) ? kwEof : kwEol;
+    scanCurrent->value[0] = 0;
+}
+
+
+static int scanToken(void) {
+    char *s = NULL;
+    int i;
+    skipWhite();
+    tokenColumn = ioColumn();
+    scanCurrent->value[0] = 0;
+    if (ioPeek() == IO_EOF) {
         scanCurrent->id = kwEof;
         scanCurrent->value[0] = 0;
-		return(0);
-	} else if (ioPeek() == '\n') {
+        return(0);
+    } else if (ioPeek() == '\n') {
         scanCurrent->id = kwEol;
         scanCurrent->value[0] = 0;
-		skipWhite();
-		return(0);
-	} else if (ioPeek() == '(') {
-		scanCurrent->id = kwParenthesesOpen;
-		scanCurrent->value[0] = 0;
-		ioNext();
-		skipWhite();
-		return(0);
-	} else if (ioPeek() == ')') {
-		scanCurrent->id = kwParenthesesClose;
-		scanCurrent->value[0] = 0;
-		ioNext();
-		skipWhite();
-		return(0);
-	} else if (ioPeek() == ',') {
-		scanCurrent->id = kwComma;
-		scanCurrent->value[0] = 0;
-		ioNext();
-		skipWhite();
-		return(0);
-	} else if (ioPeek() == ';') {
-		scanCurrent->id = kwSemicolon;
-		scanCurrent->value[0] = 0;
-		ioNext();
-		skipWhite();
-		return(0);
-	} else if (ioPeek() == ':') {
-		scanCurrent->id = kwColon;
-		scanCurrent->value[0] = 0;
-		ioNext();
-		skipWhite();
-		return(0);
-	} else if (isalpha(ioPeek())) {
-		if ((s = scanGetName()) != NULL) {
+        skipWhite();
+        return(0);
+    } else if (ioPeek() == '(') {
+        scanCurrent->id = kwParenthesesOpen;
+        scanCurrent->value[0] = 0;
+        ioNext();
+        skipWhite();
+        return(0);
+    } else if (ioPeek() == ')') {
+        scanCurrent->id = kwParenthesesClose;
+        scanCurrent->value[0] = 0;
+        ioNext();
+        skipWhite();
+        return(0);
+    } else if (ioPeek() == ',') {
+        scanCurrent->id = kwComma;
+        scanCurrent->value[0] = 0;
+        ioNext();
+        skipWhite();
+        return(0);
+    } else if (ioPeek() == ';') {
+        scanCurrent->id = kwSemicolon;
+        scanCurrent->value[0] = 0;
+        ioNext();
+        skipWhite();
+        return(0);
+    } else if (ioPeek() == ':') {
+        scanCurrent->id = kwColon;
+        scanCurrent->value[0] = 0;
+        ioNext();
+        skipWhite();
+        return(0);
+    } else if (ioPeek() == '?') {
+        /* ? is short for PRINT */
+        scanCurrent->id = kwPRINT;
+        ioNext();
+        skipWhite();
+        return(0);
+    } else if (isalpha((unsigned char)ioPeek())) {
+        if ((s = scanGetName()) != NULL) {
+            if (ioPeek() == '.') {
+                /* an abbreviated statement, e.g. PR. for PRINT */
+                ioNext();
+                skipWhite();
+                i = lookupAbbreviation(s);
+                if (i == -1) {
+                    free(s);
+                    return(1);
+                }
+                scanCurrent->id = i;
+                free(s);
+                return(0);
+            }
             i = lookup(keywordTree, s);
+            if (i == -1 && strlen(s) > MAX_NAME_LEN) {
+                utilError("variable names can be at most %d characters", MAX_NAME_LEN);
+                free(s);
+                return(1);
+            }
             if (i == -1) {
                 scanCurrent->id = kwIdentifier;
-            	strcpy(scanCurrent->value, s);
+                strcpy(scanCurrent->value, s);
             } else {
                 scanCurrent->id = i;
-				scanCurrent->value[0] = 0;
+                scanCurrent->value[0] = 0;
             }
             free(s);
             return(0);
         }
         return(1);
-	} else if (isdigit(ioPeek())) {
+    } else if (isdigit((unsigned char)ioPeek()) || ioPeek() == '.') {
         if ((s = scanGetNum()) != NULL) {
+            if (!strcmp(s, ".")) {
+                /* a lone period isn't a number; at the start of a statement it means REM */
+                scanCurrent->id = kwREM;
+                free(s);
+                return(0);
+            }
             scanCurrent->id = kwNumeric;
             strcpy(scanCurrent->value, s);
             free(s);
             return(0);
         }
         return(1);
-	} else if (isop(ioPeek())) {
-		if ((s = scanGetOp()) != NULL) {
-			scanCurrent->value[0] = 0;
-			if (!strcmp(s, "+")) {
-            	scanCurrent->id = kwOpAdd;
-			} else if (!strcmp(s, "-")) {
-				scanCurrent->id = kwOpSub;
-			} else if (!strcmp(s, "*")) {
-				scanCurrent->id = kwOpMul;
-			} else if (!strcmp(s, "/")) {
-				scanCurrent->id = kwOpDiv;
-			} else if (!strcmp(s, "^")) {
-				scanCurrent->id = kwOpExp;
-			}
+    } else if (isop(ioPeek())) {
+        if ((s = scanGetOp()) != NULL) {
+            scanCurrent->value[0] = 0;
+            if (!strcmp(s, "+")) {
+                scanCurrent->id = kwOpAdd;
+            } else if (!strcmp(s, "-")) {
+                scanCurrent->id = kwOpSub;
+            } else if (!strcmp(s, "*")) {
+                scanCurrent->id = kwOpMul;
+            } else if (!strcmp(s, "/")) {
+                scanCurrent->id = kwOpDiv;
+            } else if (!strcmp(s, "^")) {
+                scanCurrent->id = kwOpExp;
+            }
             free(s);
             return(0);
         }
-		return(1);
-	} else if (islop(ioPeek())) {
-		if ((s = scanGetLOp()) != NULL) {
-			scanCurrent->value[0] = 0;
-			if (!strcmp(s, "<")) {
-				scanCurrent->id = kwLogicalLT;
-			} else if (!strcmp(s, "<=")) {
-				scanCurrent->id = kwLogicalLTE;
-			} else if (!strcmp(s, "=")) {
-				scanCurrent->id = kwLogicalEQ;
-			} else if (!strcmp(s, "<>")) {
-				scanCurrent->id = kwLogicalNE;
-			} else if (!strcmp(s, ">")) {
-				scanCurrent->id = kwLogicalGT;
-			} else if (!strcmp(s, ">=")) {
-				scanCurrent->id = kwLogicalGTE;
-			}
-			free(s);
-			return(0);
-		}
-	} else if (ioPeek() == '"') {
-		if ((s = scanGetString()) != NULL) {
+        return(1);
+    } else if (islop(ioPeek())) {
+        if ((s = scanGetLOp()) != NULL) {
+            scanCurrent->value[0] = 0;
+            if (!strcmp(s, "<")) {
+                scanCurrent->id = kwLogicalLT;
+            } else if (!strcmp(s, "<=")) {
+                scanCurrent->id = kwLogicalLTE;
+            } else if (!strcmp(s, "=")) {
+                scanCurrent->id = kwLogicalEQ;
+            } else if (!strcmp(s, "<>")) {
+                scanCurrent->id = kwLogicalNE;
+            } else if (!strcmp(s, ">")) {
+                scanCurrent->id = kwLogicalGT;
+            } else if (!strcmp(s, ">=")) {
+                scanCurrent->id = kwLogicalGTE;
+            }
+            free(s);
+            return(0);
+        }
+    } else if (ioPeek() == '"') {
+        if ((s = scanGetString()) != NULL) {
             scanCurrent->id = kwString;
             strcpy(scanCurrent->value, s);
             free(s);
             return(0);
         }
         return(1);
-	}
-	skipWhite();
-	return(1);
+    }
+    /* not the start of any token: leave it for the error message */
+    scanCurrent->value[0] = ioPeek();
+    scanCurrent->value[1] = 0;
+    return(1);
 }
 
 
@@ -502,7 +728,7 @@ symbolType *scanPeek(void) {
 
 
 static void skipWhite(void) {
-	while (isspace(ioPeek()) && ioPeek() != '\n') {
-		ioNext();
-	}
+    while (isspace((unsigned char)ioPeek()) && ioPeek() != '\n') {
+        ioNext();
+    }
 }

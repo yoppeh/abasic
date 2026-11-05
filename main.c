@@ -23,19 +23,28 @@ static int init(void);
 
 
 int main(int ac, char **av) {
-	utilReady();
-	init();
-	ioOpenInput(NULL);
-	ioNext();
-	parseProgram();
-	return(0);
+    if (init()) {
+        aborts("initialization failed");
+    }
+    if (ioOpenInput(NULL)) {
+        aborts("couldn't read standard input");
+    }
+    /* abasic file.bas: read the file first (like LOAD), then the terminal */
+    if (ac > 1 && ioOpenInput(av[1])) {
+        aborts("couldn't open [%s]", av[1]);
+    }
+    utilReady();
+    ioNext();
+    parseProgram();
+    return(0);
 }
 
 
 static int init(void) {
-	int rc;
-	rc = ioInit();
-	rc |= progInit();
-	rc |= scanInit();
-	return(rc);
+    int rc;
+    rc = ioInit();
+    rc |= progInit();
+    rc |= scanInit();
+    rc |= varInit();
+    return(rc);
 }
