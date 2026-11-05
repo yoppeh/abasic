@@ -1,0 +1,18 @@
+# Build output
+abasic
+*.o
+*.a
+*.so
+*.dylib
+*.dSYM/
+*.d
+
+# Editor / OS
+.DS_Store
+*.swp
+*~
+.vscode/
+.idea/
+
+# Tooling
+.aember/
